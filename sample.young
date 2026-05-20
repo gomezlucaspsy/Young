@@ -1,0 +1,19 @@
+ritual main() -> Int {
+  mut n: Int = 10;
+  mut acc: Int = 0;
+
+  cost <= ON {
+    while n > 0 {
+      acc = acc + n;
+      n = n - 1;
+    }
+  }
+
+  if acc == 55 {
+    print("Young runtime check passed");
+    return 0;
+  } else {
+    print("Young runtime check failed");
+    return 1;
+  }
+}

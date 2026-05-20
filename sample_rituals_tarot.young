@@ -1,0 +1,16 @@
+ritual double(x: Int) -> Int {
+  return x * 2;
+}
+
+ritual main() -> Int {
+  let h: Int = EMPRESS double(21);
+  let result: Int = LOVERS h;
+
+  HIEROPHANT print("joined result =", result);
+
+  CHARIOT IF result == 42 {
+    WORLD;
+  } ELSE {
+    return 1;
+  }
+}

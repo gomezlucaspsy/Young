@@ -1,0 +1,23 @@
+use json;
+use math;
+
+ritual summarize(nums) -> Int {
+  let count: Int = len(nums);
+  let total: Int = sum(nums);
+  HIEROPHANT print("count=", count, " total=", total);
+  return int(math.ceil(total / count));
+}
+
+ritual main() -> Int {
+  let raw: String = "[12, 5, 9, 24, 10]";
+  let nums = json.loads(raw);
+
+  let avg_ceil: Int = HIEROPHANT summarize(nums);
+  HIEROPHANT print("avg ceil=", avg_ceil);
+
+  CHARIOT IF avg_ceil == 12 {
+    WORLD;
+  } ELSE {
+    return 1;
+  }
+}
