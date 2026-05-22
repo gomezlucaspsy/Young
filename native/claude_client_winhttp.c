@@ -132,7 +132,7 @@ int claude_message(
     char escaped_system[4096];
     char body[24576];
 
-    const char* model = (options && options->model) ? options->model : "claude-3-5-haiku-latest";
+    const char* model = (options && options->model) ? options->model : "claude-haiku-4-5";
     int max_tokens = (options && options->max_tokens > 0) ? options->max_tokens : 96;
     double temperature = (options) ? options->temperature : 0.2;
     const char* system_prompt = (options && options->system_prompt) ? options->system_prompt : "";

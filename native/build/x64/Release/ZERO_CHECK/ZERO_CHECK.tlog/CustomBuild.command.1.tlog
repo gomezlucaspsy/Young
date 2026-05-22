@@ -1,0 +1,10 @@
+^C:\USERS\PUBLI\ONEDRIVE\DESKTOP\CODE\YOUNG\NATIVE\BUILD\CMAKEFILES\40F24F51371D367BAD47DFF6C1B974F9\GENERATE.STAMP.RULE
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/Users/publi/OneDrive/Desktop/CODE/Young/native -BC:/Users/publi/OneDrive/Desktop/CODE/Young/native/build --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file C:/Users/publi/OneDrive/Desktop/CODE/Young/native/build/young_native_claude.slnx
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

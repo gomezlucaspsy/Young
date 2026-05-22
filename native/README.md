@@ -9,8 +9,8 @@ This folder adds a Windows-native C client for Anthropic Claude with low-cost de
 - `CMakeLists.txt`: Build file
 
 ## Cheap defaults
-- Model: `claude-3-5-haiku-latest`
-- `max_tokens`: `96`
+- Model: `claude-haiku-4-5`
+- `max_tokens`: `192` (clamped to 64-512)
 - `temperature`: `0.2`
 
 These defaults keep costs low while still returning useful output.
@@ -34,7 +34,13 @@ Run:
 
 Optional model override:
 ```powershell
-$env:YOUNG_CLAUDE_MODEL="claude-3-5-haiku-latest"
+$env:YOUNG_CLAUDE_MODEL="claude-haiku-4-5"
+```
+
+Optional cost/length tuning:
+```powershell
+$env:YOUNG_MAX_TOKENS="192"    # lower = cheaper, higher = longer replies
+$env:YOUNG_TEMPERATURE="0.2"   # deterministic by default
 ```
 
 ## Cost tips
