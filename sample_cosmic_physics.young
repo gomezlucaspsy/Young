@@ -1,0 +1,104 @@
+# C-transpiler-friendly symbolic machine script
+# themes: kabbalah, zodiac, chakras, classical mechanics
+
+ritual kabbalah_tree(seed: int) -> int {
+    mut level: int = 0;
+    mut energy: int = seed;
+    STRENGTH WHILE level < 10 {
+        energy = energy + level;
+        level = level + 1;
+    }
+    return energy;
+}
+
+ritual zodiac_cycle(base: int) -> int {
+    mut sign: int = 0;
+    mut flux: int = base;
+    STRENGTH WHILE sign < 12 {
+        flux = flux + (sign % 4);
+        sign = sign + 1;
+    }
+    return flux;
+}
+
+ritual chakra_balance(root: int, solar: int, crown: int) -> int {
+    mut total: int = root + solar + crown;
+    CHARIOT IF total > 21 {
+        return total - 7;
+    } ELSE {
+        return total + 7;
+    }
+}
+
+ritual physics_work(force: int, distance: int) -> int {
+    return force * distance;
+}
+
+ritual physics_power(work: int, time: int) -> int {
+    CHARIOT IF time == 0 {
+        return 0;
+    } ELSE {
+        return work / time;
+    }
+}
+
+ritual physics_momentum(mass: int, velocity: int) -> int {
+    return mass * velocity;
+}
+
+ritual physics_kinetic_energy(mass: int, velocity: int) -> int {
+    return (mass * velocity * velocity) / 2;
+}
+
+ritual physics_potential_energy(mass: int, gravity: int, height: int) -> int {
+    return mass * gravity * height;
+}
+
+ritual physics_pressure(force: int, area: int) -> int {
+    CHARIOT IF area == 0 {
+        return 0;
+    } ELSE {
+        return force / area;
+    }
+}
+
+ritual main() -> int {
+    let force: int = 12;
+    let distance: int = 5;
+    let time: int = 3;
+    let mass: int = 8;
+    let velocity: int = 4;
+    let gravity: int = 10;
+    let height: int = 6;
+    let area: int = 2;
+
+    let work: int = physics_work(force, distance);
+    let power: int = physics_power(work, time);
+    let momentum: int = physics_momentum(mass, velocity);
+    let kinetic: int = physics_kinetic_energy(mass, velocity);
+    let potential: int = physics_potential_energy(mass, gravity, height);
+    let pressure: int = physics_pressure(force, area);
+
+    let sephirot_energy: int = kabbalah_tree(3);
+    let zodiac_energy: int = zodiac_cycle(2);
+    let chakra_energy: int = chakra_balance(4, 8, 6);
+
+    mut synthesis: int = sephirot_energy + zodiac_energy + chakra_energy;
+    synthesis = synthesis + work + power + momentum + kinetic + potential + pressure;
+
+    CHARIOT IF kinetic > potential {
+        synthesis = synthesis + 11;
+    } ELSE {
+        synthesis = synthesis + 22;
+    }
+
+    HIEROPHANT print(work);
+    HIEROPHANT print(power);
+    HIEROPHANT print(momentum);
+    HIEROPHANT print(kinetic);
+    HIEROPHANT print(potential);
+    HIEROPHANT print(pressure);
+    HIEROPHANT print(synthesis);
+
+    return 0;
+}

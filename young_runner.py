@@ -3,6 +3,7 @@ import re
 import sys
 import math
 import json
+import argparse
 import importlib
 from dataclasses import dataclass
 
@@ -337,10 +338,177 @@ class Runtime:
         return int(self._call_ritual("main", []))
 
 
+def _collect_exprs_from_block(block):
+    _, stmts = block
+    exprs = []
+    for stmt in stmts:
+        kind = stmt[0]
+        if kind in ("vardecl", "assign"):
+            exprs.append(stmt[-1])
+        elif kind in ("expr", "return", "spawn", "join"):
+            exprs.append(stmt[1])
+        elif kind in ("if", "while"):
+            exprs.append(stmt[1])
+            exprs.extend(_collect_exprs_from_block(stmt[2]))
+            if kind == "if" and stmt[3] is not None:
+                exprs.extend(_collect_exprs_from_block(stmt[3]))
+        elif kind == "cost":
+            exprs.extend(_collect_exprs_from_block(stmt[1]))
+    return exprs
+
+
+def validate_c_profile(imports, rituals):
+    if imports:
+        mod_names = ", ".join(mod for mod, _ in imports)
+        raise SyntaxError(
+            f"C profile does not allow Python module imports. Remove: {mod_names}"
+        )
+
+    if "main" not in rituals or len(rituals["main"][0]) != 0:
+        raise SyntaxError("C profile requires ritual main() with no parameters")
+
+    unsupported = [
+        (r"\bstr\s*\(", "Use numeric-only print values; avoid str(...)."),
+        (r"\bfloat\s*\(", "Use integer arithmetic for C profile."),
+        (r"\bbool\s*\(", "Use explicit 0/1 values for C profile."),
+        (r"\bjson\.", "json module access is not C-transpilable."),
+        (r"\bmath\.", "math module access is not C-transpilable."),
+        (r"\bspawn\s*\(", "spawn/join are runtime features, not C profile."),
+        (r"\bjoin\s*\(", "spawn/join are runtime features, not C profile."),
+        (r'"[^"\\]*"\s*\+', "Avoid string concatenation in C profile prints."),
+        (r'\+\s*"[^"\\]*"', "Avoid string concatenation in C profile prints."),
+    ]
+
+    for ritual_name, (_params, body) in rituals.items():
+        for expr in _collect_exprs_from_block(body):
+            for pattern, hint in unsupported:
+                if re.search(pattern, expr):
+                    raise SyntaxError(
+                        f"C profile violation in ritual '{ritual_name}': '{expr}'. {hint}"
+                    )
+
+
+class CTranspiler:
+    def __init__(self, imports, rituals):
+        self.imports = imports
+        self.rituals = rituals
+
+    def transpile(self):
+        out = []
+        out.append("#include <stdio.h>")
+        out.append("#include <stdint.h>")
+        out.append("")
+        out.append("#define YOUNG_PRINT(x) _Generic((x), \\")
+        out.append("    int: printf(\"%d\\n\", (x)), \\")
+        out.append("    long: printf(\"%ld\\n\", (long)(x)), \\")
+        out.append("    double: printf(\"%f\\n\", (double)(x)), \\")
+        out.append("    char*: printf(\"%s\\n\", (x)), \\")
+        out.append("    const char*: printf(\"%s\\n\", (x)), \\")
+        out.append("    default: printf(\"%d\\n\", (int)(x))")
+        out.append("")
+
+        # Forward declarations
+        for ritual_name, (params, _body) in self.rituals.items():
+            out.append(self._function_signature(ritual_name, params) + ";")
+        out.append("")
+
+        for ritual_name, (params, body) in self.rituals.items():
+            out.append(self._function_signature(ritual_name, params))
+            out.append("{")
+            out.extend(self._emit_block(body, 1))
+            out.append("}")
+            out.append("")
+
+        return "\n".join(out).rstrip() + "\n"
+
+    def _function_signature(self, ritual_name, params):
+        c_params = ", ".join(f"int {name}" for name in params)
+        if not c_params:
+            c_params = "void"
+        return f"int {ritual_name}({c_params})"
+
+    def _emit_block(self, block, indent):
+        _, stmts = block
+        lines = []
+        for stmt in stmts:
+            lines.extend(self._emit_stmt(stmt, indent))
+        return lines
+
+    def _emit_stmt(self, stmt, indent):
+        kind = stmt[0]
+        pre = "    " * indent
+        if kind == "vardecl":
+            _, _mut, name, init = stmt
+            return [f"{pre}int {name} = {self._expr_to_c(init)};"]
+        if kind == "assign":
+            _, name, expr = stmt
+            return [f"{pre}{name} = {self._expr_to_c(expr)};"]
+        if kind == "expr":
+            _, expr = stmt
+            expr = expr.strip()
+            if expr.startswith("print(") and expr.endswith(")"):
+                inner = expr[len("print("):-1].strip()
+                return [f"{pre}YOUNG_PRINT({self._expr_to_c(inner)});"]
+            return [f"{pre}(void)({self._expr_to_c(expr)});"]
+        if kind == "if":
+            _, cond, then_block, else_block = stmt
+            lines = [f"{pre}if ({self._expr_to_c(cond)}) {{"]
+            lines.extend(self._emit_block(then_block, indent + 1))
+            if else_block is None:
+                lines.append(f"{pre}}}")
+            else:
+                lines.append(f"{pre}}} else {{")
+                lines.extend(self._emit_block(else_block, indent + 1))
+                lines.append(f"{pre}}}")
+            return lines
+        if kind == "while":
+            _, cond, body = stmt
+            lines = [f"{pre}while ({self._expr_to_c(cond)}) {{"]
+            lines.extend(self._emit_block(body, indent + 1))
+            lines.append(f"{pre}}}")
+            return lines
+        if kind == "return":
+            _, expr = stmt
+            return [f"{pre}return (int)({self._expr_to_c(expr)});"]
+        if kind == "halt":
+            return [f"{pre}return 0;"]
+        if kind == "spawn":
+            _, expr = stmt
+            return [f"{pre}/* spawn omitted in C profile */ (void)({self._expr_to_c(expr)});"]
+        if kind == "join":
+            _, expr = stmt
+            return [f"{pre}/* join omitted in C profile */ (void)({self._expr_to_c(expr)});"]
+        if kind == "cost":
+            _, body = stmt
+            lines = [f"{pre}/* cost directive ignored in C output */"]
+            lines.extend(self._emit_block(body, indent))
+            return lines
+        raise RuntimeError(f"Unsupported statement for C transpiler: {kind}")
+
+    def _expr_to_c(self, expr):
+        c_expr = expr
+        c_expr = re.sub(r"\band\b", "&&", c_expr)
+        c_expr = re.sub(r"\bor\b", "||", c_expr)
+        c_expr = re.sub(r"\bnot\b", "!", c_expr)
+        c_expr = re.sub(r"\bTrue\b", "1", c_expr)
+        c_expr = re.sub(r"\bFalse\b", "0", c_expr)
+        c_expr = re.sub(r"\bint\s*\(", "(int)(", c_expr)
+        c_expr = re.sub(r"\bfloat\s*\(", "(double)(", c_expr)
+        return c_expr
+
+
 def run(src: str) -> int:
     tokens = tokenize(src)
     imports, rituals = Parser(tokens).parse_program()
     return Runtime(imports, rituals).run()
+
+
+def transpile_to_c(src: str, strict_c_profile=False) -> str:
+    tokens = tokenize(src)
+    imports, rituals = Parser(tokens).parse_program()
+    if strict_c_profile:
+        validate_c_profile(imports, rituals)
+    return CTranspiler(imports, rituals).transpile()
 
 
 def _resolve_input_file(argv):
@@ -408,7 +576,17 @@ def run_repl():
 
 
 def main():
-    input_file = _resolve_input_file(sys.argv)
+    arg_parser = argparse.ArgumentParser(description="Young runtime and C transpiler")
+    arg_parser.add_argument("input_file", nargs="?", help="Path to .young program")
+    arg_parser.add_argument("--emit-c", dest="emit_c", help="Write transpiled C output to this file")
+    arg_parser.add_argument(
+        "--strict-c-profile",
+        action="store_true",
+        help="Reject non-C-friendly constructs (recommended for transpilation)",
+    )
+    args = arg_parser.parse_args()
+
+    input_file = args.input_file if args.input_file else _resolve_input_file(sys.argv)
     if input_file is None:
         run_repl()
         return
@@ -420,6 +598,12 @@ def main():
 
     with open(input_file, "r", encoding="utf-8") as f:
         src = f.read()
+
+    if args.emit_c:
+        c_src = transpile_to_c(src, strict_c_profile=args.strict_c_profile)
+        with open(args.emit_c, "w", encoding="utf-8", newline="\n") as f:
+            f.write(c_src)
+        print(f"Transpiled C written to: {args.emit_c}")
 
     code = run(src)
     print(f"Young file: {input_file}")

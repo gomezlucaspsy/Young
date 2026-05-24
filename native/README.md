@@ -67,3 +67,35 @@ The GUI can:
 - Run `.young` scripts through `young_runner.py` runtime logic.
 - Build the native binary using CMake.
 - Call Claude through `young_haiku_cli.exe` with your API key.
+- Run a cheap Live Agent loop with project-aware MyComputer actions.
+
+## Live Agent + MyComputer
+
+Young Studio now includes a live text agent panel that can modify the local project using a constrained MyComputer protocol.
+
+It also includes microphone capture for Live mode on Windows (8-second dictation capture per click).
+
+Supported MyComputer actions:
+- `create` a `.young` file
+- `read` a `.young` file
+- `update` a `.young` file
+- `list` current `.young` project tree
+
+Action format (emitted by the model, executed locally by GUI):
+```text
+[FILE_ACTION:create|/folder|name.young|file|content]
+[FILE_ACTION:read|/folder|name.young|file|]
+[FILE_ACTION:update|/folder|name.young|file|new content]
+[FILE_ACTION:list|/|||]
+```
+
+Safety rules:
+- Actions are constrained to the current project root.
+- Path traversal outside project root is blocked.
+- Only `.young` files can be created/read/updated.
+
+Microphone notes:
+- Uses Windows speech recognition via PowerShell + `System.Speech`.
+- Click `Mic` in the Live panel, speak for up to ~8 seconds, then send/edit the recognized text.
+- Mic and voice playback run in hidden background PowerShell processes (no console popup).
+- Enable/disable assistant voice with the `Voice reply` toggle in the Live tab.

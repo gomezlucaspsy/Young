@@ -187,6 +187,32 @@ After basic architecture works:
 2. Add a transformation ritual (`anima_bridge`) for data normalization.
 3. Build a mini standard pattern library across multiple `.young` files.
 
+## 10. C / Assembly Transpile Profile
+
+Young now supports C emission through `young_runner.py` so you can keep a symbolic authoring layer while targeting a lower-level execution model.
+
+Run transpile:
+
+```powershell
+python young_runner.py sample_cosmic_physics.young --strict-c-profile --emit-c native/generated_young.c
+```
+
+Then compile generated C (example with MSVC toolchain through CMake shell):
+
+```powershell
+cl /std:c11 /O2 native/generated_young.c
+```
+
+### C Profile Rules (Recommended)
+
+- Keep `ritual main()` with no parameters.
+- Prefer integer arithmetic (`int`) for deterministic behavior.
+- Avoid Python-only helpers like `str(...)`, `json.*`, `math.*`, `spawn/join`.
+- Avoid string concatenation in prints; print numeric values directly.
+- Keep loops bounded and explicit (`STRENGTH WHILE` with clear stop conditions).
+
+This profile keeps `.young` close to C semantics and easier to map to assembly mental models.
+
 ---
 
 If you want, the next step can be a second document with reusable "ritual blueprints" (state machine, reducer loop, parser pipeline, and evaluator loop) written directly in `.young`.
