@@ -5,10 +5,11 @@ import { readRepo } from "@/lib/github-repo";
 
 const SYSTEM_PROMPT_BASE = `You are Young Oracle, a live coding assistant for the Young language (.young files) running in a browser.
 
-You can create, read, update, or list files in the user's sandboxed browser filesystem (MyComputer) by ending your reply with FILE_ACTION blocks in exactly this format:
+You can create, read, update, delete, or list files in the user's sandboxed browser filesystem (MyComputer) by ending your reply with FILE_ACTION blocks in exactly this format:
 [FILE_ACTION:create|/|name.young|file|content]
 [FILE_ACTION:read|/|name.young|file|]
 [FILE_ACTION:update|/|name.young|file|new content]
+[FILE_ACTION:delete|/|name.young|file|]
 [FILE_ACTION:list|/|||]
 Only .young files are allowed. These live only in this browser (localStorage) — they are NOT the user's real disk.
 
@@ -43,7 +44,7 @@ async function callClaude(apiKey: string, system: string, messages: ApiMessage[]
     },
     body: JSON.stringify({
       model: process.env.YOUNG_CLAUDE_MODEL || "claude-haiku-4-5",
-      max_tokens: 1536,
+      max_tokens: 4096,
       system,
       messages,
     }),

@@ -134,6 +134,9 @@ export default function LivePage() {
         const { fs, result } = fsApplyAction(fsLoad(), action);
         fsSave(fs);
         append({ role: "system", text: `${action.action.toUpperCase()} -> ${result}` });
+        if (action.action === "delete") {
+          setSelected((prev) => (prev && prev.name === (action.name ?? "").trim() ? null : prev));
+        }
       }
       refreshFiles();
 
@@ -185,6 +188,19 @@ export default function LivePage() {
     if (!name) return;
     const { fs, result } = fsApplyAction(fsLoad(), { action: "create", path: "/", name, content: "" });
     fsSave(fs);
+    refreshFiles();
+    append({ role: "system", text: result });
+  }
+
+  function deleteFile(item: FsListItem, e?: React.MouseEvent) {
+    e?.stopPropagation();
+    if (!confirm(`Borrar ${item.name}?`)) return;
+    const { fs, result } = fsApplyAction(fsLoad(), { action: "delete", path: "/", name: item.name });
+    fsSave(fs);
+    if (selected?.path === item.path) {
+      setSelected(null);
+      setEditorText("");
+    }
     refreshFiles();
     append({ role: "system", text: result });
   }
@@ -266,15 +282,23 @@ export default function LivePage() {
             <div className="flex-1 overflow-y-auto p-2 text-sm">
               {files.length === 0 && <p className="p-2 text-xs text-zinc-600">Sin archivos aún.</p>}
               {files.map((f) => (
-                <button
+                <div
                   key={f.path}
-                  onClick={() => openFile(f)}
-                  className={`block w-full truncate rounded px-2 py-1 text-left ${
+                  className={`flex items-center gap-1 rounded ${
                     selected?.path === f.path ? "bg-violet/20 text-violet" : "text-zinc-300 hover:bg-zinc-900"
                   }`}
                 >
-                  {f.name}
-                </button>
+                  <button onClick={() => openFile(f)} className="flex-1 truncate px-2 py-1 text-left">
+                    {f.name}
+                  </button>
+                  <button
+                    onClick={(e) => deleteFile(f, e)}
+                    title="Borrar"
+                    className="px-2 py-1 text-xs text-zinc-600 hover:text-red-400"
+                  >
+                    ✕
+                  </button>
+                </div>
               ))}
             </div>
             {selected && (
@@ -285,9 +309,17 @@ export default function LivePage() {
                   rows={8}
                   className="w-full rounded-md border border-zinc-800 bg-black/40 p-2 font-mono text-xs outline-none"
                 />
-                <button onClick={saveFile} className="mt-2 w-full rounded-md bg-gold/90 px-3 py-1.5 text-xs font-medium text-black">
-                  Guardar
-                </button>
+                <div className="mt-2 flex gap-2">
+                  <button onClick={saveFile} className="flex-1 rounded-md bg-gold/90 px-3 py-1.5 text-xs font-medium text-black">
+                    Guardar
+                  </button>
+                  <button
+                    onClick={() => deleteFile(selected)}
+                    className="rounded-md border border-red-900/60 px-3 py-1.5 text-xs font-medium text-red-400 hover:bg-red-950/40"
+                  >
+                    Borrar
+                  </button>
+                </div>
               </div>
             )}
           </div>

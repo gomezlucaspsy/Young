@@ -9,7 +9,7 @@ export type FsMap = Record<string, FsFile>;
 export type FsListItem = { name: string; path: string } & FsFile;
 
 export type FileAction = {
-  action: "create" | "read" | "update" | "list";
+  action: "create" | "read" | "update" | "delete" | "list";
   path: string;
   name?: string;
   type?: "file";
@@ -90,20 +90,52 @@ export function fsApplyAction(fs: FsMap, action: FileAction): { fs: FsMap; resul
     return { fs: next, result: `OK: updated ${fullPath}` };
   }
 
+  if (action.action === "delete") {
+    if (!next[fullPath]) return { fs, result: `ERROR: file not found: ${fullPath}` };
+    delete next[fullPath];
+    return { fs: next, result: `OK: deleted ${fullPath}` };
+  }
+
   return { fs, result: `ERROR: unsupported action` };
+}
+
+// Both wire tags share one block terminator rule: a block is closed by the
+// LAST "]" before the next [FILE_ACTION:/[PC_ACTION: tag (or end of text),
+// not the first one. Young source content is full of "]" (arrays, blocks),
+// so closing at the first "]" truncated file content mid-way — this is what
+// let content run all the way up to the next tag/end of message instead.
+const ACTION_TAGS = ["[FILE_ACTION:", "[PC_ACTION:"];
+
+function extractActionBlocks(text: string, tag: string): string[] {
+  const blocks: string[] = [];
+  let searchFrom = 0;
+  while (true) {
+    const start = text.indexOf(tag, searchFrom);
+    if (start === -1) break;
+    const contentStart = start + tag.length;
+
+    let nextTagAt = text.length;
+    for (const t of ACTION_TAGS) {
+      const idx = text.indexOf(t, contentStart);
+      if (idx !== -1 && idx < nextTagAt) nextTagAt = idx;
+    }
+
+    const window = text.slice(contentStart, nextTagAt);
+    const closeIdx = window.lastIndexOf("]");
+    blocks.push(closeIdx === -1 ? window : window.slice(0, closeIdx));
+    searchFrom = closeIdx === -1 ? nextTagAt : contentStart + closeIdx + 1;
+  }
+  return blocks;
 }
 
 // Parse [FILE_ACTION:action|path|name|type|content] blocks (same wire format
 // used by the native and Python Live tabs, so prompts/behavior stay in sync).
 export function parseFileActions(text: string): FileAction[] {
   const actions: FileAction[] = [];
-  const parts = text.split("[FILE_ACTION:");
-  for (let i = 1; i < parts.length; i++) {
-    const end = parts[i].indexOf("]");
-    const block = end === -1 ? parts[i] : parts[i].slice(0, end);
+  for (const block of extractActionBlocks(text, "[FILE_ACTION:")) {
     const fields = block.split("|");
     const action = (fields[0] || "").trim().toLowerCase();
-    if (!["create", "read", "update", "list"].includes(action)) continue;
+    if (!["create", "read", "update", "delete", "list"].includes(action)) continue;
     actions.push({
       action: action as FileAction["action"],
       path: (fields[1] || "/").trim() || "/",
@@ -121,10 +153,7 @@ export type PcAction = { type: string; param: string };
 
 export function parsePcActions(text: string): PcAction[] {
   const actions: PcAction[] = [];
-  const parts = text.split("[PC_ACTION:");
-  for (let i = 1; i < parts.length; i++) {
-    const end = parts[i].indexOf("]");
-    const block = end === -1 ? parts[i] : parts[i].slice(0, end);
+  for (const block of extractActionBlocks(text, "[PC_ACTION:")) {
     const bar = block.indexOf("|");
     const type = (bar === -1 ? block : block.slice(0, bar)).trim().toLowerCase();
     const param = bar === -1 ? "" : block.slice(bar + 1).trim();
