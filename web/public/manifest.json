@@ -1,0 +1,27 @@
+{
+  "name": "Young Studio",
+  "short_name": "Young",
+  "description": "Un assembly para el inconsciente — chateá con Young Oracle directo desde tu celular o PC.",
+  "start_url": "/live",
+  "display": "standalone",
+  "background_color": "#08070c",
+  "theme_color": "#08070c",
+  "orientation": "portrait-primary",
+  "scope": "/",
+  "lang": "es",
+  "categories": ["developer tools", "productivity"],
+  "icons": [
+    {
+      "src": "/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}
