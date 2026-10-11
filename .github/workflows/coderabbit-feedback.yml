@@ -120,7 +120,8 @@ jobs:
             git add -A
             git commit -m "[updates-bot] Apply CodeRabbit review (round ${{ steps.review.outputs.round }})"
             git push origin "HEAD:${{ github.event.pull_request.head.ref }}"
-            printf '\n\n_Ronda %s de %s — push hecho, CodeRabbit va a re-revisar._\n' "${{ steps.review.outputs.round }}" "$MAX_ROUNDS" >> /tmp/reply.md
+            # CodeRabbit skips auto-review on public repos until asked.
+            printf '\n\n_Ronda %s de %s — push hecho._\n\n@coderabbitai review\n' "${{ steps.review.outputs.round }}" "$MAX_ROUNDS" >> /tmp/reply.md
           else
             printf '\n\n_Sin cambios de código en esta ronda._\n' >> /tmp/reply.md
           fi

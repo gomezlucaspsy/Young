@@ -125,6 +125,7 @@ jobs:
           printf '\n\n---\nCodeRabbit revisa este PR y el bot aplica sus sugerencias (hasta 2 rondas). Mergealo a mano cuando esté listo.\n' >> /tmp/pr-body.md
 
       - name: Open PR
+        id: pr
         if: steps.changes.outputs.skip != 'true'
         uses: peter-evans/create-pull-request@v7
         with:
@@ -137,3 +138,10 @@ jobs:
           commit-message: "[updates-bot] Implement tasks from updates/"
           body-path: /tmp/pr-body.md
           delete-branch: true
+
+      # CodeRabbit skips auto-review on public (OSS) repos until asked.
+      - name: Ask CodeRabbit to review
+        if: steps.pr.outputs.pull-request-number
+        env:
+          GH_TOKEN: ${{ secrets.UPDATES_BOT_TOKEN || secrets.GITHUB_TOKEN }}
+        run: gh pr comment "${{ steps.pr.outputs.pull-request-number }}" -R "${{ github.repository }}" --body "@coderabbitai review"
