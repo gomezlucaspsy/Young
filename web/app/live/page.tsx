@@ -5,6 +5,16 @@ import Link from "next/link";
 import { fsApplyAction, fsList, fsTree, type FileAction } from "@/lib/virtual-fs";
 import { useAgentId, useVfs, vfsCommit, vfsCurrent } from "@/lib/vfs-store";
 import { parseUpdateItems, UPDATES_FILE } from "@/lib/updates";
+import {
+  deleteFolderFile,
+  folderAccessSupported,
+  pickFolder,
+  readFolder,
+  regrantFolder,
+  restoreFolder,
+  writeFolderFile,
+  type DirHandle,
+} from "@/lib/local-folder";
 import ChatPanel from "@/components/live/ChatPanel";
 import CommandPalette, { type Command } from "@/components/live/CommandPalette";
 import ConnectPanel from "@/components/live/ConnectPanel";
@@ -67,6 +77,10 @@ export default function LivePage() {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  // A real folder on this PC, opened with the browser's native permission
+  // prompt (File System Access API) — every change is mirrored back to it.
+  const [folder, setFolder] = useState<DirHandle | null>(null);
+  const [pendingFolder, setPendingFolder] = useState<DirHandle | null>(null);
 
   const online = agent?.status === "online";
   const updatesContent = fs[UPDATES_PATH]?.content ?? null;
@@ -109,6 +123,16 @@ export default function LivePage() {
       .catch(() => {});
   }, []);
 
+  useEffect(() => {
+    restoreFolder().then((saved) => {
+      if (!saved) return;
+      if (saved.granted) importFromDisk(saved.handle);
+      else setPendingFolder(saved.handle);
+    });
+    // importFromDisk only touches stable setters / the vfs store.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // ── Helpers ──────────────────────────────────────────────────────────────
   const toast = (text: string, ok = true) => {
     const id = newId();
@@ -117,6 +141,48 @@ export default function LivePage() {
   };
 
   const append = (turn: Turn) => setTurns((prev) => [...prev, turn]);
+
+  // Disk wins on connect: the folder's files are merged into the browser copy.
+  async function importFromDisk(handle: DirHandle) {
+    const disk = await readFolder(handle);
+    vfsCommit({ ...vfsCurrent(), ...disk });
+    setFolder(handle);
+    setPendingFolder(null);
+    toast(`Carpeta "${handle.name}" abierta (${Object.keys(disk).length} archivos)`);
+  }
+
+  async function openFolder() {
+    try {
+      if (pendingFolder && (await regrantFolder(pendingFolder))) return importFromDisk(pendingFolder);
+      if (folderAccessSupported()) return importFromDisk(await pickFolder());
+      document.getElementById("young-file-import")?.click();
+    } catch (err) {
+      if ((err as DOMException)?.name !== "AbortError") toast(String(err), false);
+    }
+  }
+
+  // Android / Firefox / Safari: no folder access, so import via the OS picker.
+  async function importPickedFiles(list: FileList | null) {
+    let next = vfsCurrent();
+    let n = 0;
+    for (const file of Array.from(list ?? [])) {
+      if (!file.name.toLowerCase().endsWith(".young")) continue;
+      const path = `/${file.name}`;
+      const now = new Date().toISOString();
+      next = { ...next, [path]: { type: "file", content: await file.text(), created: next[path]?.created ?? now, modified: now } };
+      n++;
+    }
+    vfsCommit(next);
+    toast(`${n} archivo(s) .young importados`);
+  }
+
+  function syncToDisk(name: string, content: string | null) {
+    if (!folder) return;
+    const clean = name.trim().replace(/^\/+/, "");
+    (content === null ? deleteFolderFile(folder, clean) : writeFolderFile(folder, clean, content)).catch((err) =>
+      toast(`No se pudo guardar ${clean} en la carpeta: ${err}`, false),
+    );
+  }
 
   const openFile = (path: string) => {
     setOpenTabs((prev) => (prev.includes(path) ? prev : [...prev, path]));
@@ -163,6 +229,7 @@ export default function LivePage() {
       return;
     }
     vfsCommit(next);
+    syncToDisk(currentPath, drafts[currentPath]);
     setDrafts((prev) => {
       const copy = { ...prev };
       delete copy[currentPath];
@@ -175,6 +242,7 @@ export default function LivePage() {
     const { fs: next, result } = fsApplyAction(vfsCurrent(), { action: "create", path: "/", name, content });
     if (result.startsWith("ERROR")) return result.replace(/^ERROR:\s*/, "");
     vfsCommit(next);
+    syncToDisk(name, content);
     openFile(`/${name.trim().replace(/^\/+/, "")}`);
     return null;
   }
@@ -186,6 +254,7 @@ export default function LivePage() {
       return;
     }
     vfsCommit(next);
+    syncToDisk(path, null);
     closeTab(path);
     toast(`Borrado ${path.slice(1)}`);
   }
@@ -229,6 +298,8 @@ export default function LivePage() {
         vfsCommit(next);
         const ok = !result.startsWith("ERROR");
         const path = `/${(action.name ?? "").trim().replace(/^\/+/, "")}`;
+        if (ok && action.action === "delete") syncToDisk(path, null);
+        else if (ok && (action.action === "create" || action.action === "update")) syncToDisk(path, action.content ?? "");
         const isUpdates = path === UPDATES_PATH;
         append({
           id: newId(),
@@ -278,6 +349,7 @@ export default function LivePage() {
     { id: "new", label: "Nuevo archivo", icon: "plus", run: startNewFile },
     { id: "save", label: "Guardar archivo", hint: "Ctrl+S", icon: "save", run: saveActive },
     { id: "chat", label: "Preguntar al Oráculo", hint: "Ctrl+L", icon: "sparkles", run: () => focusChat() },
+    { id: "folder", label: folder ? `Carpeta abierta: ${folder.name}` : "Abrir carpeta de mi PC", icon: "files", run: openFolder },
     { id: "explorer", label: "Mostrar MyComputer", hint: "Ctrl+B", icon: "files", run: () => openPanel("explorer") },
     { id: "updates", label: "Updates: revisar y enviar a GitHub", icon: "updates", run: () => openPanel("updates") },
     { id: "connect", label: online ? "Mi PC (conectada)" : "Conectar mi PC", icon: "plug", run: () => openPanel("connect") },
@@ -444,6 +516,9 @@ export default function LivePage() {
               onAskOracle={(p) => send(p)}
               creating={creatingFile}
               setCreating={setCreatingFile}
+              folderName={folder?.name ?? null}
+              pendingFolderName={pendingFolder?.name ?? null}
+              onOpenFolder={openFolder}
             />
           )}
           {sidePanel === "updates" && (
@@ -505,7 +580,9 @@ export default function LivePage() {
           <Icon name="updates" size={12} />
           {pendingUpdates ? `${pendingUpdates} pedido${pendingUpdates === 1 ? "" : "s"}` : "Updates"}
         </button>
-        <span className="ml-auto hidden px-2 sm:inline">{files.length} archivo{files.length === 1 ? "" : "s"} · en este navegador</span>
+        <span className="ml-auto hidden px-2 sm:inline">
+          {files.length} archivo{files.length === 1 ? "" : "s"} · {folder ? `carpeta ${folder.name}` : "en este navegador"}
+        </span>
         {currentPath && <span className="hidden px-2 sm:inline">{currentPath.endsWith(".young") ? "Young" : "Texto"}</span>}
         <button onClick={() => window.dispatchEvent(new Event("young:open-install"))} className="flex h-full items-center gap-1 px-2 hover:bg-white/5 max-sm:ml-auto">
           <Icon name="phone" size={12} /> Instalar
@@ -531,6 +608,18 @@ export default function LivePage() {
           </button>
         ))}
       </nav>
+
+      <input
+        id="young-file-import"
+        type="file"
+        accept=".young"
+        multiple
+        hidden
+        onChange={(e) => {
+          importPickedFiles(e.target.files);
+          e.target.value = "";
+        }}
+      />
 
       {paletteOpen && <CommandPalette commands={commands} onClose={() => setPaletteOpen(false)} />}
 

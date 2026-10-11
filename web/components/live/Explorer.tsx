@@ -15,9 +15,12 @@ type Props = {
   onAskOracle: (prompt: string) => void;
   creating: boolean;
   setCreating: (v: boolean) => void;
+  folderName: string | null;
+  pendingFolderName: string | null;
+  onOpenFolder: () => void;
 };
 
-export default function Explorer({ files, activePath, dirtyPaths, onOpen, onCreate, onDelete, onAskOracle, creating, setCreating }: Props) {
+export default function Explorer({ files, activePath, dirtyPaths, onOpen, onCreate, onDelete, onAskOracle, creating, setCreating, folderName, pendingFolderName, onOpenFolder }: Props) {
   const [newName, setNewName] = useState("");
   const [createError, setCreateError] = useState("");
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
@@ -54,6 +57,23 @@ export default function Explorer({ files, activePath, dirtyPaths, onOpen, onCrea
         >
           <Icon name="plus" size={15} />
         </button>
+      </div>
+
+      <div className="px-2 pb-2">
+        {folderName ? (
+          <div className="flex items-center gap-2 rounded bg-emerald-950/30 px-2 py-1.5 text-xs text-emerald-200" title="Los cambios se guardan también en esta carpeta">
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+            <span className="truncate">Carpeta: {folderName}</span>
+          </div>
+        ) : (
+          <button
+            onClick={onOpenFolder}
+            className="flex w-full items-center gap-2 rounded border border-white/10 px-2 py-1.5 text-left text-xs text-zinc-300 hover:bg-white/5"
+          >
+            <Icon name="files" size={13} className="text-gold" />
+            <span className="truncate">{pendingFolderName ? `Reabrir carpeta ${pendingFolderName}` : "Abrir carpeta de mi PC"}</span>
+          </button>
+        )}
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto pb-2" role="tree" aria-label="Archivos">
