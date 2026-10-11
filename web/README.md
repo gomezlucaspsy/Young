@@ -2,30 +2,33 @@ This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-
 
 ## Young Live (`/live`)
 
-The browser version of the Live Agent. Two independent pieces:
+The browser version of the Live Agent, laid out like an IDE: activity bar
+(MyComputer / Updates / Conectar mi PC), editor with tabs, Oracle chat on the
+right, status bar, and a command palette (`Ctrl+K`). On phones it collapses
+to one pane with a bottom tab bar.
 
-- **FILE_ACTION** — a sandboxed `.young` filesystem that lives entirely in
-  `localStorage` (`lib/virtual-fs.ts`). The chat route (`app/api/ai/chat`)
-  asks Claude to emit `[FILE_ACTION:...]` blocks exactly like the native and
-  Python Live tabs; the browser applies them client-side. No server access to
-  a real disk is involved.
-- **PC_ACTION + control-plane** — lets the Live Agent check on or act within
-  the user's *real* machine, since a Vercel function can't touch their disk.
-  `lib/control-plane.ts` is an in-memory register/heartbeat/command-queue
-  store (per server instance — resets on redeploy/cold start, same
-  limitation as any in-memory store on Vercel). The user runs
-  `young_host_agent.py` (repo root) on their own machine; it registers itself
-  under an id shown on `/live`, polls `GET /api/agent/commands`, executes
-  through the fixed allowlist in `young_pc_actions.py` (`status`,
-  `list_processes`, `open_folder`, `run_young` — deliberately no generic
-  shell/run-command action), and reports back through
-  `POST /api/agent/command-result`. The chat route only *enqueues* commands;
-  it never executes anything itself.
+- **FILE_ACTION** — a sandboxed filesystem in `localStorage`
+  (`lib/virtual-fs.ts`, bound to React in `lib/vfs-store.ts`). Only `.young`
+  files plus the special `updates.txt`. The browser applies the actions.
+- **PC_ACTION + control-plane** — `lib/control-plane.ts` is an in-memory
+  register/heartbeat/command-queue store (resets on cold start; the Host
+  Agent re-registers on its own). "Conectar mi PC" downloads a launcher from
+  `/api/agent/connector` with the agent id and URL baked in; it fetches
+  `young_host_agent.py`, `young_pc_actions.py` and `young_runner.py` from
+  `public/agent/` (synced from the repo root by `scripts/sync-agent.mjs` on
+  `predev`/`prebuild`) and runs the fixed allowlist — no generic shell action.
+- **updates.txt → PR** — the Oracle writes change requests to `updates.txt`;
+  "Enviar a GitHub" opens GitHub's new-file page pre-filled with only the
+  not-yet-sent lines (tracked in localStorage) — no token, the owner just
+  commits. It also downloads as .txt/.pdf. See `../updates/README.md`.
 
-Requires `ANTHROPIC_API_KEY` set in the environment (Vercel project settings,
-or `.env.local` for `npm run dev`). Optional `YOUNG_CLAUDE_MODEL` overrides
-the model (defaults to `claude-haiku-4-5`, matching the cheap defaults used
-by the native/Python versions).
+### Environment
+
+| Variable | Needed for |
+| --- | --- |
+| `ANTHROPIC_API_KEY` | the Oracle chat (required) |
+| `YOUNG_CLAUDE_MODEL` | optional model override (default `claude-haiku-4-5`) |
+| `YOUNG_UPDATES_REPO` | optional, default `gomezlucaspsy/Young` |
 
 ## Getting Started
 

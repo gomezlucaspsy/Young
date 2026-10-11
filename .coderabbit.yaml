@@ -1,0 +1,77 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit AI code review config for Young.
+# Requires the CodeRabbit GitHub App installed on gomezlucaspsy/Young.
+language: "es-ES"
+tone_instructions: "Directo y concreto. Prioriza bugs, seguridad y paridad entre las tres superficies (Python, C nativo, web) sobre estilo."
+early_access: false
+
+reviews:
+  profile: "chill"
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: true
+  sequence_diagrams: false
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - "main"
+  path_filters:
+    - "!**/node_modules/**"
+    - "!web/.next/**"
+    - "!web/package-lock.json"
+    - "!web/tsconfig.tsbuildinfo"
+    - "!web/public/downloads/**"
+    - "!web/public/agent/**"
+    - "!native/build/**"
+    - "!**/__pycache__/**"
+    - "!.venv/**"
+  path_instructions:
+    - path: "web/app/api/**"
+      instructions: |
+        Rutas de API de Next.js 16 (App Router). Revisa que ANTHROPIC_API_KEY nunca llegue al cliente ni a logs, validacion de input,
+        y que la ruta de chat solo ENCOLE PC_ACTIONs (nunca ejecute nada).
+    - path: "web/lib/**"
+      instructions: |
+        Logica compartida: parser FILE_ACTION/PC_ACTION, filesystem virtual en
+        localStorage y control-plane en memoria. El parser tiene que seguir siendo
+        compatible con el de young_gui.py y native/young_studio.c.
+    - path: "web/app/live/**"
+      instructions: |
+        UI estilo IDE (explorer, editor, chat, status bar). Revisa accesibilidad
+        (foco, teclado, aria), fugas de intervalos/listeners y que funcione en movil.
+    - path: "young_pc_actions.py"
+      instructions: |
+        Allowlist FIJA de PC_ACTIONs. Rechaza cualquier cambio que agregue un
+        "run command" / shell generico o que deje escapar paths del project root.
+    - path: "young_host_agent.py"
+      instructions: |
+        Puente headless entre el control-plane web y la PC real. Solo puede ejecutar
+        lo que young_pc_actions.py permite; revisa reintentos y manejo de red.
+    - path: "native/**"
+      instructions: |
+        Cliente Win32 en C (WinHTTP). Revisa buffer overflows, handles sin cerrar y
+        paridad del protocolo FILE_ACTION/PC_ACTION con las otras superficies.
+    - path: "**/*.young"
+      instructions: |
+        Programas en el lenguaje Young. El vocabulario de tarot/Jung/Kabbalah
+        (CHARIOT IF, STRENGTH WHILE, ritual, shadow, anima...) es intencional: no
+        sugieras renombrarlo.
+    - path: "updates/**"
+      instructions: |
+        Pedidos del dueno para el bot. No revises estilo; solo marca si una tarea
+        quedo tildada [x] sin estar implementada en el diff.
+  tools:
+    eslint:
+      enabled: true
+    ruff:
+      enabled: true
+    gitleaks:
+      enabled: true
+    github-checks:
+      enabled: true
+
+chat:
+  auto_reply: true

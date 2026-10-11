@@ -1,0 +1,127 @@
+name: CodeRabbit review -> Claude fixes
+
+# Closes the feedback loop on the bot's own PRs: when CodeRabbit submits a
+# review on an updates-bot/* branch, Claude reads it, applies the actionable
+# suggestions, and pushes to the same branch. CodeRabbit then re-reviews the
+# new commit. Capped at MAX_ROUNDS so the two bots can't ping-pong forever;
+# the merge decision always stays with you.
+
+on:
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: coderabbit-feedback-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+env:
+  MAX_ROUNDS: 2
+
+jobs:
+  apply-review:
+    if: >-
+      github.event.review.user.login == 'coderabbitai[bot]' &&
+      startsWith(github.event.pull_request.head.ref, 'updates-bot/') &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Collect the review and decide whether to act
+        id: review
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REVIEW_BODY: ${{ github.event.review.body }}
+          PR: ${{ github.event.pull_request.number }}
+          REVIEW_ID: ${{ github.event.review.id }}
+        run: |
+          ROUNDS=$(git log "origin/${{ github.event.pull_request.base.ref }}..HEAD" --oneline --grep 'Apply CodeRabbit review' | wc -l)
+          echo "Previous feedback rounds: $ROUNDS"
+          if [ "$ROUNDS" -ge "$MAX_ROUNDS" ]; then
+            echo "Round limit reached."; echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          {
+            echo "# CodeRabbit review summary"; echo; printf '%s\n' "$REVIEW_BODY"; echo
+            echo "# Inline comments"
+            gh api "repos/${{ github.repository }}/pulls/$PR/reviews/$REVIEW_ID/comments" --paginate \
+              --jq '.[] | "## \(.path):\(.line // .original_line)\n\(.body)\n"'
+          } > /tmp/review.md
+
+          if grep -q 'Actionable comments posted: 0' /tmp/review.md && ! grep -q '^## ' /tmp/review.md; then
+            echo "Nothing actionable."; echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "round=$((ROUNDS + 1))" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v4
+        if: steps.review.outputs.skip != 'true'
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - uses: actions/setup-python@v5
+        if: steps.review.outputs.skip != 'true'
+        with:
+          python-version: "3.12"
+
+      - run: npm ci --ignore-scripts
+        if: steps.review.outputs.skip != 'true'
+        working-directory: web
+
+      - name: Claude applies the review
+        if: steps.review.outputs.skip != 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          claude_args: >-
+            --model claude-sonnet-5-5
+            --max-turns 40
+            --allowedTools "Read,Edit,Write,Glob,Grep,Bash(npm --prefix web run build),Bash(npm --prefix web run lint),Bash(python -m py_compile:*),Bash(python young_runner.py:*),Bash(git diff:*),Bash(git status)"
+          prompt: |
+            You are the maintainer bot for Young (see web/AGENTS.md; three Live Agent surfaces —
+            Python, native C, web — share the FILE_ACTION / PC_ACTION protocol). CodeRabbit just
+            reviewed your PR. Its review is in /tmp/review.md.
+
+            1. For each comment decide: apply it, or skip it. Apply real bugs, security issues,
+               broken parity and clear correctness fixes. Skip pure style nits, suggestions that
+               rename the tarot/Jung vocabulary, anything that would add a generic shell action,
+               and anything that conflicts with the original request in updates/.
+            2. Make the edits. Run `npm --prefix web run lint`, `npm --prefix web run build` and
+               `python -m py_compile` on changed .py files; fix anything you broke.
+            3. Write a short Spanish reply to /tmp/reply.md: a bullet list of what you applied and
+               what you skipped (with a one-line reason each).
+            Do not commit or push; a later step does that.
+
+      - name: Discard any bot edits to workflows
+        if: steps.review.outputs.skip != 'true'
+        run: |
+          git checkout -- .github
+          git clean -fdq -- .github
+
+      - name: Push fixes and reply on the PR
+        if: steps.review.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          [ -s /tmp/reply.md ] || echo "Revisé el review de CodeRabbit." > /tmp/reply.md
+          if git status --porcelain | grep -q .; then
+            git add -A
+            git commit -m "[updates-bot] Apply CodeRabbit review (round ${{ steps.review.outputs.round }})"
+            git push origin "HEAD:${{ github.event.pull_request.head.ref }}"
+            printf '\n\n_Ronda %s de %s — push hecho, CodeRabbit va a re-revisar._\n' "${{ steps.review.outputs.round }}" "$MAX_ROUNDS" >> /tmp/reply.md
+          else
+            printf '\n\n_Sin cambios de código en esta ronda._\n' >> /tmp/reply.md
+          fi
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/reply.md
