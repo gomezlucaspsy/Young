@@ -133,8 +133,8 @@ def main() -> int:
                         })
                     except (urllib.error.URLError, OSError) as ex:
                         print(f"ERROR: could not report result: {ex}", file=sys.stderr)
-            except (urllib.error.URLError, OSError):
-                pass  # transient network issue — keep polling
+            except (urllib.error.URLError, OSError, ValueError):
+                pass  # transient network issue / non-JSON reply — keep polling
 
             time.sleep(POLL_INTERVAL_S)
     except KeyboardInterrupt:

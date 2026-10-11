@@ -42,8 +42,9 @@ jobs:
           REVIEW_BODY: ${{ github.event.review.body }}
           PR: ${{ github.event.pull_request.number }}
           REVIEW_ID: ${{ github.event.review.id }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
-          ROUNDS=$(git log "origin/${{ github.event.pull_request.base.ref }}..HEAD" --oneline --grep 'Apply CodeRabbit review' | wc -l)
+          ROUNDS=$(git log "origin/$BASE_REF..HEAD" --oneline --grep 'Apply CodeRabbit review' | wc -l)
           echo "Previous feedback rounds: $ROUNDS"
           if [ "$ROUNDS" -ge "$MAX_ROUNDS" ]; then
             echo "Round limit reached."; echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
@@ -112,17 +113,20 @@ jobs:
         if: steps.review.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          ROUND: ${{ steps.review.outputs.round }}
+          PR: ${{ github.event.pull_request.number }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           [ -s /tmp/reply.md ] || echo "Revisé el review de CodeRabbit." > /tmp/reply.md
           if git status --porcelain | grep -q .; then
             git add -A
-            git commit -m "[updates-bot] Apply CodeRabbit review (round ${{ steps.review.outputs.round }})"
-            git push origin "HEAD:${{ github.event.pull_request.head.ref }}"
+            git commit -m "[updates-bot] Apply CodeRabbit review (round $ROUND)"
+            git push origin "HEAD:$HEAD_REF"
             # CodeRabbit skips auto-review on public repos until asked.
-            printf '\n\n_Ronda %s de %s — push hecho._\n\n@coderabbitai review\n' "${{ steps.review.outputs.round }}" "$MAX_ROUNDS" >> /tmp/reply.md
+            printf '\n\n_Ronda %s de %s — push hecho._\n\n@coderabbitai full review\n' "$ROUND" "$MAX_ROUNDS" >> /tmp/reply.md
           else
             printf '\n\n_Sin cambios de código en esta ronda._\n' >> /tmp/reply.md
           fi
-          gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/reply.md
+          gh pr comment "$PR" --body-file /tmp/reply.md

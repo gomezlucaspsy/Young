@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { enqueueCommand, isAllowedCommandType, type CommandType } from "@/lib/control-plane";
+import { enqueueCommand, getAgent, isAllowedCommandType, type CommandType } from "@/lib/control-plane";
 import { parseFileActions, parsePcActions, stripActions, type FileAction } from "@/lib/virtual-fs";
 import { readRepo } from "@/lib/github-repo";
 
@@ -15,8 +15,8 @@ Only .young files are allowed, plus one special file: updates.txt. These live on
 
 updates.txt is the change-request list for the Young app itself. When the user asks for an updates.txt or updates.pdf,
 asks you to note feedback / improvements / bugs about Young, or agrees to one of your suggestions for the app, write
-them there: one concrete, implementable request per line, formatted "[ ] <request>". If updates.txt already exists,
-read it first and update it keeping every existing line (never re-add a request that's already listed); otherwise
+them there: one concrete, implementable request per line, formatted "[ ] <request>". If updates.txt already exists
+(its current content is given below), update it keeping every existing line (never re-add a request that's already listed); otherwise
 create it. Then tell the user in one short sentence that they can send it from the Updates panel ("Enviar a GitHub",
 or download it as .txt/.pdf) — a bot turns new lines into a pull request that CodeRabbit reviews.
 
@@ -78,8 +78,8 @@ export async function POST(request: NextRequest) {
       messages: ChatMessage[];
       filesTree?: string;
       activeFile?: { name?: string; content?: string };
+      updatesFile?: string;
       agentId?: string;
-      agentOnline?: boolean;
     };
 
     const apiMessages: ApiMessage[] = (body.messages ?? [])
@@ -90,13 +90,19 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ reply: "Send a message to get started." });
     }
 
-    const agentActive = Boolean(body.agentId && body.agentOnline);
+    // Trust the server-side heartbeat, not the client's claim that the agent is online.
+    const agentActive = Boolean(body.agentId && getAgent(body.agentId)?.status === "online");
     const system = [
       SYSTEM_PROMPT_BASE,
       "",
       "Current MyComputer (browser) contents:",
       body.filesTree?.trim() || "(empty)",
       "",
+      body.updatesFile?.trim()
+        ? "Current updates.txt (keep every line when you update it):\n```\n" +
+          body.updatesFile.slice(0, ACTIVE_FILE_MAX_CHARS) +
+          "\n```\n"
+        : "",
       body.activeFile?.name
         ? `The user has ${body.activeFile.name} open in the editor (possibly unsaved). Its current content:\n` +
           "```\n" + String(body.activeFile.content ?? "").slice(0, ACTIVE_FILE_MAX_CHARS) + "\n```\n"

@@ -98,10 +98,10 @@ export default function LivePage() {
     let cancelled = false;
     const tick = async () => {
       try {
-        const res = await fetch("/api/agent/status");
+        const res = await fetch(`/api/agent/status?agentId=${encodeURIComponent(agentId)}`);
         if (!res.ok) return;
         const data = await res.json();
-        const mine = (data.agents ?? []).find((a: { agentId: string }) => a.agentId === agentId);
+        const mine = data.agent;
         const label = mine && mine.label?.length > 1 ? mine.label : mine?.platform;
         if (!cancelled) setAgent(mine ? { status: mine.status, label, platform: mine.platform } : { status: "offline" });
       } catch {
@@ -279,8 +279,8 @@ export default function LivePage() {
             .map((t) => ({ role: t.role === "oracle" ? "assistant" : "user", text: t.text })),
           filesTree: fsTree(vfsCurrent()),
           activeFile: currentPath ? { name: currentPath.slice(1), content: editorValue } : undefined,
+          updatesFile: vfsCurrent()[UPDATES_PATH]?.content,
           agentId,
-          agentOnline: online,
         }),
       });
       const data = await res.json();

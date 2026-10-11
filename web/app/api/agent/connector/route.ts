@@ -7,11 +7,14 @@ import { NextRequest, NextResponse } from "next/server";
 // Host Agent files from /agent/ if they're missing, and starts the agent.
 
 const AGENT_FILES = ["young_host_agent.py", "young_pc_actions.py", "young_runner.py"];
-const AGENT_ID_RE = /^young-[a-z0-9]{4,16}$/;
+const AGENT_ID_RE = /^young-[a-z0-9]{16,32}$/;
 
 function windowsScript(agentId: string, baseUrl: string): string {
   const fetches = AGENT_FILES.map(
     (f) =>
+      // In ~/Young (created by this launcher) always refresh, so allowlist and
+      // network fixes reach every PC; inside a Young checkout, never overwrite.
+      `if "%FRESH%"=="1" del /q "${f}" 2>nul\r\n` +
       `if not exist "${f}" powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -UseBasicParsing '%YOUNG_CONTROL_PLANE_URL%/agent/${f}' -OutFile '${f}'"`,
   ).join("\r\n");
   return [
@@ -22,7 +25,8 @@ function windowsScript(agentId: string, baseUrl: string): string {
     `set "YOUNG_CONTROL_PLANE_URL=${baseUrl}"`,
     'set "PYTHONUNBUFFERED=1"',
     "",
-    'if exist "%~dp0young_runner.py" (set "YOUNG_DIR=%~dp0") else (set "YOUNG_DIR=%USERPROFILE%\\Young")',
+    'set "FRESH=0"',
+    'if exist "%~dp0young_runner.py" (set "YOUNG_DIR=%~dp0") else (set "YOUNG_DIR=%USERPROFILE%\\Young" & set "FRESH=1")',
     'if not exist "%YOUNG_DIR%" mkdir "%YOUNG_DIR%"',
     'cd /d "%YOUNG_DIR%"',
     "",
@@ -52,7 +56,8 @@ function windowsScript(agentId: string, baseUrl: string): string {
 
 function unixScript(agentId: string, baseUrl: string): string {
   const fetches = AGENT_FILES.map(
-    (f) => `[ -f "${f}" ] || curl -fsSL "$YOUNG_CONTROL_PLANE_URL/agent/${f}" -o "${f}"`,
+    (f) =>
+      `if [ "$YOUNG_DIR" = "$HOME/Young" ] || [ ! -f "${f}" ]; then curl -fsSL "$YOUNG_CONTROL_PLANE_URL/agent/${f}" -o "${f}.tmp" && mv "${f}.tmp" "${f}"; fi`,
   ).join("\n");
   return [
     "#!/bin/sh",

@@ -1,4 +1,5 @@
 @echo off
+cd /d "%~dp0"
 if "%YOUNG_CLAUDE_MODEL%"=="" set "YOUNG_CLAUDE_MODEL=claude-haiku-4-5"
 if "%YOUNG_MAX_TOKENS%"=="" set "YOUNG_MAX_TOKENS=256"
 if "%YOUNG_TEMPERATURE%"=="" set "YOUNG_TEMPERATURE=0.3"

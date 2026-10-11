@@ -54,16 +54,24 @@ export function vfsCommit(next: FsMap) {
 // ── Agent id: one stable id per browser, created on first read ─────────────
 let cachedAgentId = "";
 
+// The id doubles as the only credential for this browser's Host Agent, so it
+// must be long and random (old 6-char ids are replaced).
+function newAgentId(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return `young-${Array.from(bytes, (b) => (b % 36).toString(36)).join("")}`;
+}
+
 function getAgentId(): string {
   if (cachedAgentId) return cachedAgentId;
   try {
     cachedAgentId = localStorage.getItem("young:agentId") || "";
-    if (!cachedAgentId) {
-      cachedAgentId = `young-${Math.random().toString(36).slice(2, 8)}`;
+    if (cachedAgentId.length < 20) {
+      cachedAgentId = newAgentId();
       localStorage.setItem("young:agentId", cachedAgentId);
     }
   } catch {
-    cachedAgentId = `young-${Math.random().toString(36).slice(2, 8)}`;
+    cachedAgentId = newAgentId();
   }
   return cachedAgentId;
 }
