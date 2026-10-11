@@ -57,9 +57,35 @@ async function pollCommand(commandId: string, onDone: (result: string, ok: boole
   onDone("(timed out waiting for Host Agent)", false);
 }
 
+// What the user is consenting to — mirrors the fixed PC_ACTION allowlist in
+// young_pc_actions.py (there is no generic shell action).
+const PC_PERMISSIONS = [
+  "Ver el sistema operativo y el espacio libre en disco",
+  "Listar los programas abiertos",
+  "Abrir tu carpeta Young en el explorador",
+  "Ejecutar archivos .young de tu carpeta Young",
+];
+
+type ConnectState = "ask" | "dismissed" | "waiting";
+
+function detectOs(): "windows" | "unix" {
+  return typeof navigator !== "undefined" && /win/i.test(navigator.platform || navigator.userAgent) ? "windows" : "unix";
+}
+
 export default function LivePage() {
   const agentId = useAgentId();
   const [agentStatus, setAgentStatus] = useState<AgentSnapshot>(null);
+  const [connectState, setConnectState] = useState<ConnectState>("ask");
+
+  function allowPc() {
+    if (!agentId) return;
+    // The browser can't start local processes, so "Permitir" hands over a
+    // launcher with this id + URL baked in; the OS then asks to run it.
+    const a = document.createElement("a");
+    a.href = `/api/agent/connector?agentId=${encodeURIComponent(agentId)}&os=${detectOs()}`;
+    a.click();
+    setConnectState("waiting");
+  }
   const [turns, setTurns] = useState<Turn[]>([
     { role: "system", text: "Young Oracle — Web Live. .young files here live only in this browser." },
   ]);
@@ -216,18 +242,55 @@ export default function LivePage() {
             <span
               className={`h-2 w-2 rounded-full ${agentStatus?.status === "online" ? "bg-emerald-400" : "bg-zinc-600"}`}
             />
-            Host Agent: {agentStatus?.status === "online" ? "online" : "offline"} · id{" "}
-            <code className="text-zinc-300">{agentId || "…"}</code>
+            {agentStatus?.status === "online" ? (
+              "PC conectada"
+            ) : connectState === "waiting" ? (
+              "Esperando conexión…"
+            ) : (
+              <button onClick={() => setConnectState("ask")} className="text-gold hover:underline">
+                Conectar mi PC
+              </button>
+            )}
           </div>
         </header>
 
-        {agentStatus?.status !== "online" && (
+        {agentStatus?.status !== "online" && connectState === "ask" && (
+          <div className="mt-4 rounded-lg border border-zinc-800 bg-zinc-950/60 p-4 text-sm text-zinc-300">
+            <p className="font-medium text-zinc-100">¿Permitís que el Oráculo acceda a esta PC?</p>
+            <p className="mt-1 text-xs text-zinc-500">Solo podrá hacer esto, nada más:</p>
+            <ul className="mt-2 space-y-1 text-xs text-zinc-400">
+              {PC_PERMISSIONS.map((p) => (
+                <li key={p}>· {p}</li>
+              ))}
+            </ul>
+            <div className="mt-3 flex gap-2">
+              <button
+                onClick={allowPc}
+                disabled={!agentId}
+                className="rounded-md bg-violet px-4 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+              >
+                Permitir
+              </button>
+              <button
+                onClick={() => setConnectState("dismissed")}
+                className="rounded-md border border-zinc-800 px-4 py-1.5 text-xs text-zinc-400 hover:bg-zinc-900"
+              >
+                Ahora no
+              </button>
+            </div>
+            <p className="mt-3 text-xs text-zinc-600">
+              Sin esto, el chat sigue funcionando normal para archivos .young en el navegador.
+            </p>
+          </div>
+        )}
+
+        {agentStatus?.status !== "online" && connectState === "waiting" && (
           <div className="mt-4 rounded-lg border border-zinc-800 bg-zinc-950/60 p-4 text-xs text-zinc-400">
-            Para que el Oráculo pueda revisar o actuar en tu PC real (PC_ACTION), corré en tu máquina:
-            <pre className="mt-2 overflow-x-auto rounded bg-black/40 p-2 text-zinc-300">
-{`YOUNG_AGENT_ID=${agentId || "<id>"} YOUNG_CONTROL_PLANE_URL=<esta-url> python young_host_agent.py`}
-            </pre>
-            Sin el Host Agent, el chat sigue funcionando normal para archivos .young en el navegador.
+            Abrí el archivo <span className="text-zinc-200">conectar-young</span> que se acaba de descargar y aceptá
+            cuando tu sistema te pregunte. Esta página detecta la conexión sola; para desconectar, cerrá esa ventana.
+            <button onClick={() => setConnectState("dismissed")} className="ml-2 text-zinc-500 hover:underline">
+              Cancelar
+            </button>
           </div>
         )}
 
