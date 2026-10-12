@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { enqueueCommand, getAgent, isAllowedCommandType, type CommandType } from "@/lib/control-plane";
 import { parseFileActions, parsePcActions, stripActions, type FileAction } from "@/lib/virtual-fs";
 import { readRepo } from "@/lib/github-repo";
+import { checkYoung, YOUNG_SYNTAX_GUIDE } from "@/lib/young-syntax";
 
 const SYSTEM_PROMPT_BASE = `You are Young Oracle, a live coding assistant for the Young language (.young files) running in a browser.
 
@@ -34,7 +35,11 @@ If (and only if) a Host Agent is connected, you can also check on or act within 
 [PC_ACTION:run_young|name.young] runs an existing project script on the real machine, returns its output
 Those four are queued for the Host Agent and can take a few seconds to complete — say you're checking, don't pretend to already have the answer. read_repo is different: it resolves immediately, in this same turn.
 
-Never explain FILE_ACTION or PC_ACTION syntax to the user. Only emit a block when the request actually needs one. Reply concisely.`;
+Never explain FILE_ACTION or PC_ACTION syntax to the user. Only emit a block when the request actually needs one. Reply concisely.
+Any Young code you write — in FILE_ACTION content or in a reply — must follow the syntax guide below exactly. Every .young
+file you create or update is checked by the real parser; if it fails you get the error back and must fix it.
+
+${YOUNG_SYNTAX_GUIDE}`;
 
 type ChatMessage = { role: "user" | "assistant"; text: string };
 type ApiMessage = { role: "user" | "assistant"; content: string };
@@ -115,12 +120,27 @@ export async function POST(request: NextRequest) {
     const allFileActions: FileAction[] = [];
     const repoLog: { param: string; summary: string }[] = [];
     const queuedPcActions: { type: string; param: string; commandId: string | null; error?: string }[] = [];
+    const syntaxFixed: string[] = [];
 
     let rawText = "";
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
       rawText = await callClaude(apiKey, system, apiMessages);
 
-      allFileActions.push(...parseFileActions(rawText));
+      // Every .young the Oracle writes goes through the real parser's rules; a
+      // file that wouldn't parse is sent back for a fix instead of being saved
+      // (on the last round it is kept, so the editor can show the error).
+      const lastRound = round === MAX_TOOL_ROUNDS - 1;
+      const syntaxErrors: string[] = [];
+      for (const fa of parseFileActions(rawText)) {
+        const isYoung = (fa.name ?? "").trim().toLowerCase().endsWith(".young");
+        const check = isYoung && (fa.action === "create" || fa.action === "update") ? checkYoung(fa.content ?? "") : { ok: true as const };
+        if (check.ok || lastRound) {
+          allFileActions.push(fa);
+        } else {
+          syntaxErrors.push(`${(fa.name ?? "").trim()} line ${check.line}: ${check.message}`);
+          syntaxFixed.push((fa.name ?? "").trim());
+        }
+      }
 
       const rawPcActions = parsePcActions(rawText);
       const repoActions = rawPcActions.filter((pa) => pa.type === "read_repo");
@@ -137,12 +157,19 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      if (repoActions.length === 0) break;
+      if (repoActions.length === 0 && syntaxErrors.length === 0) break;
 
-      const assistantText = stripActions(rawText);
+      const assistantText = syntaxErrors.length ? rawText : stripActions(rawText);
       apiMessages.push({ role: "assistant", content: assistantText || rawText });
 
-      const toolLines: string[] = [];
+      const toolLines: string[] = syntaxErrors.length
+        ? [
+            "[young_syntax_check]: these files were NOT saved because the Young parser rejects them:\n" +
+              syntaxErrors.join("\n") +
+              "\n" +
+              "Re-emit the same FILE_ACTION (same create/update) for each of them with corrected content, following the syntax guide exactly.",
+          ]
+        : [];
       for (const pa of repoActions) {
         const result = await readRepo(pa.param);
         toolLines.push(`[read_repo ${pa.param}]: ${result}`);
@@ -155,7 +182,13 @@ export async function POST(request: NextRequest) {
     }
 
     const visible = stripActions(rawText) || "(no response)";
-    return NextResponse.json({ reply: visible, fileActions: allFileActions, pcActions: queuedPcActions, repoActions: repoLog });
+    return NextResponse.json({
+      reply: visible,
+      fileActions: allFileActions,
+      pcActions: queuedPcActions,
+      repoActions: repoLog,
+      syntaxFixed: [...new Set(syntaxFixed)],
+    });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }

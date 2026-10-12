@@ -41,3 +41,18 @@ jobs:
         run: python -m py_compile *.py
       - name: Run the sample program
         run: python young_runner.py sample.young
+      - name: Every committed .young file parses
+        run: |
+          python - <<'PY'
+          import glob, sys
+          from young_runner import tokenize, Parser
+          bad = 0
+          for path in sorted(glob.glob("**/*.young", recursive=True)):
+              try:
+                  Parser(tokenize(open(path, encoding="utf-8").read())).parse_program()
+                  print(f"ok   {path}")
+              except Exception as ex:
+                  bad += 1
+                  print(f"FAIL {path}: {ex}")
+          sys.exit(1 if bad else 0)
+          PY
