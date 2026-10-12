@@ -16,7 +16,7 @@ import {
   writeFolderFile,
   type DirHandle,
 } from "@/lib/local-folder";
-import ChatPanel from "@/components/live/ChatPanel";
+import ChatPanel, { type ChatAttachment } from "@/components/live/ChatPanel";
 import CommandPalette, { type Command } from "@/components/live/CommandPalette";
 import ConnectPanel from "@/components/live/ConnectPanel";
 import Editor from "@/components/live/Editor";
@@ -28,6 +28,16 @@ import type { AgentStatus, SidePanel, Turn, UpdatesConfig } from "@/components/l
 const UPDATES_PATH = `/${UPDATES_FILE}`;
 type MobileView = "files" | "editor" | "chat";
 type Toast = { id: number; text: string; ok: boolean };
+
+function downloadTextFile(name: string, content: string) {
+  const filename = name.split(/[\\/]/).filter(Boolean).pop() || "archivo.txt";
+  const url = URL.createObjectURL(new Blob([content], { type: "text/plain;charset=utf-8" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
 
 let nextId = 1;
 const newId = () => nextId++;
@@ -262,12 +272,22 @@ export default function LivePage() {
   }
 
   // ── Chat ─────────────────────────────────────────────────────────────────
-  async function send(override?: string) {
-    const text = (override ?? input).trim();
-    if (!text || busy) return;
+  async function send(override?: string, attachments: ChatAttachment[] = []) {
+    const userText = (override ?? input).trim();
+    if ((!userText && attachments.length === 0) || busy) return;
+    const text = userText || "Revisá los archivos adjuntos y ayudame a entenderlos.";
     setInput("");
     setMobileView("chat");
-    const history = [...turns, { id: newId(), role: "user" as const, text }];
+    const history = [
+      ...turns,
+      {
+        id: newId(),
+        role: "user" as const,
+        text,
+        attachments: attachments.map(({ name, kind }) => ({ name, kind })),
+      },
+    ];
+    const latestId = history[history.length - 1].id;
     setTurns(history);
     setBusy(true);
 
@@ -278,7 +298,11 @@ export default function LivePage() {
         body: JSON.stringify({
           messages: history
             .filter((t) => t.role === "user" || t.role === "oracle")
-            .map((t) => ({ role: t.role === "oracle" ? "assistant" : "user", text: t.text })),
+            .map((t) => ({
+              role: t.role === "oracle" ? "assistant" : "user",
+              text: t.text,
+              ...(t.role === "user" && t.id === latestId && attachments.length ? { attachments } : {}),
+            })),
           filesTree: fsTree(vfsCurrent()),
           activeFile: currentPath ? { name: currentPath.slice(1), content: editorValue } : undefined,
           updatesFile: vfsCurrent()[UPDATES_PATH]?.content,
@@ -354,6 +378,7 @@ export default function LivePage() {
   const commands: Command[] = [
     { id: "new", label: "Nuevo archivo", icon: "plus", run: startNewFile },
     { id: "save", label: "Guardar archivo", hint: "Ctrl+S", icon: "save", run: saveActive },
+    ...(currentPath ? [{ id: "download", label: `Descargar ${currentPath.slice(1)}`, icon: "download" as IconName, run: () => downloadTextFile(currentPath.slice(1), editorValue) }] : []),
     { id: "chat", label: "Preguntar al Oráculo", hint: "Ctrl+L", icon: "sparkles", run: () => focusChat() },
     { id: "folder", label: folder ? `Carpeta abierta: ${folder.name}` : "Abrir carpeta de mi PC", icon: "files", run: openFolder },
     { id: "explorer", label: "Mostrar MyComputer", hint: "Ctrl+B", icon: "files", run: () => openPanel("explorer") },
@@ -519,6 +544,7 @@ export default function LivePage() {
               onOpen={openFile}
               onCreate={(name) => createFile(name)}
               onDelete={deleteFile}
+              onDownload={(path) => downloadTextFile(path, drafts[path] ?? fs[path]?.content ?? "")}
               onAskOracle={(p) => send(p)}
               creating={creatingFile}
               setCreating={setCreatingFile}
@@ -551,6 +577,7 @@ export default function LivePage() {
             value={editorValue}
             onChange={(v) => currentPath && setDrafts((prev) => ({ ...prev, [currentPath]: v }))}
             onSave={saveActive}
+            onDownload={() => currentPath && downloadTextFile(currentPath, editorValue)}
             onSelectTab={setActivePath}
             onCloseTab={closeTab}
             onAskOracle={(p) => focusChat(p)}

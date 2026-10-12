@@ -1,5 +1,5 @@
 export type Turn =
-  | { id: number; role: "user"; text: string }
+  | { id: number; role: "user"; text: string; attachments?: { name: string; kind: "image" | "document" | "text" }[] }
   | { id: number; role: "oracle"; text: string }
   | { id: number; role: "error"; text: string }
   // Something the Oracle did (file write, repo read, PC action). `path` makes

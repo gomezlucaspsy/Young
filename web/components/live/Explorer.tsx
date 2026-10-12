@@ -12,6 +12,7 @@ type Props = {
   onOpen: (path: string) => void;
   onCreate: (name: string) => string | null; // returns an error message, or null on success
   onDelete: (path: string) => void;
+  onDownload: (path: string) => void;
   onAskOracle: (prompt: string) => void;
   creating: boolean;
   setCreating: (v: boolean) => void;
@@ -20,7 +21,7 @@ type Props = {
   onOpenFolder: () => void;
 };
 
-export default function Explorer({ files, activePath, dirtyPaths, onOpen, onCreate, onDelete, onAskOracle, creating, setCreating, folderName, pendingFolderName, onOpenFolder }: Props) {
+export default function Explorer({ files, activePath, dirtyPaths, onOpen, onCreate, onDelete, onDownload, onAskOracle, creating, setCreating, folderName, pendingFolderName, onOpenFolder }: Props) {
   const [newName, setNewName] = useState("");
   const [createError, setCreateError] = useState("");
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
@@ -135,6 +136,14 @@ export default function Explorer({ files, activePath, dirtyPaths, onOpen, onCrea
                 <span className={`font-mono text-[10px] ${isUpdates ? "text-gold" : "text-violet"}`}>{isUpdates ? "TXT" : "YG"}</span>
                 <span className="truncate">{f.name}</span>
                 {dirtyPaths.has(f.path) && <span className="h-1.5 w-1.5 rounded-full bg-zinc-300" title="Sin guardar" />}
+              </button>
+              <button
+                onClick={() => onDownload(f.path)}
+                title={`Descargar ${f.name}`}
+                aria-label={`Descargar ${f.name}`}
+                className="rounded p-1 text-zinc-500 opacity-0 hover:text-zinc-100 focus:opacity-100 group-hover:opacity-100"
+              >
+                <Icon name="download" size={13} />
               </button>
               <button
                 onClick={() => setConfirmDelete(f.path)}

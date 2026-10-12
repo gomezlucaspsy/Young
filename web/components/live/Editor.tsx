@@ -9,13 +9,14 @@ type Props = {
   value: string;
   onChange: (value: string) => void;
   onSave: () => void;
+  onDownload: () => void;
   onSelectTab: (path: string) => void;
   onCloseTab: (path: string) => void;
   onAskOracle: (prompt: string) => void;
   welcome: React.ReactNode;
 };
 
-export default function Editor({ tabs, activePath, value, onChange, onSave, onSelectTab, onCloseTab, onAskOracle, welcome }: Props) {
+export default function Editor({ tabs, activePath, value, onChange, onSave, onDownload, onSelectTab, onCloseTab, onAskOracle, welcome }: Props) {
   const gutterRef = useRef<HTMLDivElement>(null);
   const active = tabs.find((t) => t.path === activePath) ?? null;
   const lineCount = value.split("\n").length;
@@ -80,6 +81,13 @@ export default function Editor({ tabs, activePath, value, onChange, onSave, onSe
                 className="flex items-center gap-1.5 rounded px-2 py-1 hover:bg-white/5 hover:text-zinc-200"
               >
                 <Icon name="sparkles" size={13} /> Preguntar al Oráculo
+              </button>
+              <button
+                onClick={onDownload}
+                title={`Descargar ${active.name}`}
+                className="flex items-center gap-1.5 rounded px-2 py-1 hover:bg-white/5 hover:text-zinc-200"
+              >
+                <Icon name="download" size={13} /> Descargar
               </button>
               <button
                 onClick={onSave}
