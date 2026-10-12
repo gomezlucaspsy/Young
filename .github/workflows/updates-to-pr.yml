@@ -102,6 +102,9 @@ jobs:
                  shell / run-command action, on any surface.
                - Keep the tarot / Jung / Kabbalah vocabulary (CHARIOT IF, ritual, shadow...) — it is
                  core to the product.
+               - Young code is NOT Python. Its exact syntax is YOUNG_SYNTAX_GUIDE in web/lib/young-syntax.ts
+                 (rituals, `mut`/`let`, CHARIOT IF / ELSE, STRENGTH WHILE, `HIEROPHANT print(...);`, semicolons).
+                 Run `python young_runner.py <file>.young` on every .young file you create or change.
                - If you change the protocol or a Live Agent behavior, mirror it on the other surfaces
                  when feasible; otherwise say so in the PR body.
                - Never commit secrets or edit .env files with real values.

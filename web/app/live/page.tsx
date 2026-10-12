@@ -5,6 +5,7 @@ import Link from "next/link";
 import { fsApplyAction, fsList, fsTree, type FileAction } from "@/lib/virtual-fs";
 import { useAgentId, useVfs, vfsCommit, vfsCurrent } from "@/lib/vfs-store";
 import { parseUpdateItems, UPDATES_FILE } from "@/lib/updates";
+import { checkYoung } from "@/lib/young-syntax";
 import {
   deleteFolderFile,
   folderAccessSupported,
@@ -91,6 +92,7 @@ export default function LivePage() {
   const currentPath = activePath && fs[activePath] ? activePath : (tabs[tabs.length - 1] ?? null);
   const dirtyPaths = new Set(Object.keys(drafts).filter((p) => fs[p] && drafts[p] !== fs[p].content));
   const editorValue = currentPath ? (drafts[currentPath] ?? fs[currentPath]?.content ?? "") : "";
+  const syntax = currentPath?.endsWith(".young") ? checkYoung(editorValue) : null;
 
   // ── Background sync ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -287,6 +289,10 @@ export default function LivePage() {
       if (data.error) {
         append({ id: newId(), role: "error", text: String(data.error) });
         return;
+      }
+
+      for (const name of (data.syntaxFixed ?? []) as string[]) {
+        append({ id: newId(), role: "action", ok: true, text: `Corrigió la sintaxis de ${name}` });
       }
 
       for (const repo of data.repoActions ?? []) {
@@ -583,6 +589,14 @@ export default function LivePage() {
         <span className="ml-auto hidden px-2 sm:inline">
           {files.length} archivo{files.length === 1 ? "" : "s"} · {folder ? `carpeta ${folder.name}` : "en este navegador"}
         </span>
+        {syntax && (
+          <span
+            className={`flex h-full max-w-[45%] items-center gap-1 truncate px-2 ${syntax.ok ? "text-zinc-400" : "text-red-300"}`}
+            title={syntax.ok ? "El archivo compila con el intérprete de Young" : `Línea ${syntax.line}: ${syntax.message}`}
+          >
+            {syntax.ok ? "✓ Sintaxis OK" : `✕ Línea ${syntax.line}: ${syntax.message}`}
+          </span>
+        )}
         {currentPath && <span className="hidden px-2 sm:inline">{currentPath.endsWith(".young") ? "Young" : "Texto"}</span>}
         <button onClick={() => window.dispatchEvent(new Event("young:open-install"))} className="flex h-full items-center gap-1 px-2 hover:bg-white/5 max-sm:ml-auto">
           <Icon name="phone" size={12} /> Instalar
