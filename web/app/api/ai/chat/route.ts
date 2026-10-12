@@ -121,6 +121,7 @@ export async function POST(request: NextRequest) {
     const repoLog: { param: string; summary: string }[] = [];
     const queuedPcActions: { type: string; param: string; commandId: string | null; error?: string }[] = [];
     const syntaxFixed: string[] = [];
+    const pendingFix = new Set<string>();
 
     let rawText = "";
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
@@ -134,11 +135,14 @@ export async function POST(request: NextRequest) {
       for (const fa of parseFileActions(rawText)) {
         const isYoung = (fa.name ?? "").trim().toLowerCase().endsWith(".young");
         const check = isYoung && (fa.action === "create" || fa.action === "update") ? checkYoung(fa.content ?? "") : { ok: true as const };
+        const name = (fa.name ?? "").trim();
         if (check.ok || lastRound) {
           allFileActions.push(fa);
+          // Only report a fix once a later round really produced a valid version.
+          if (check.ok && pendingFix.delete(name)) syntaxFixed.push(name);
         } else {
-          syntaxErrors.push(`${(fa.name ?? "").trim()} line ${check.line}: ${check.message}`);
-          syntaxFixed.push((fa.name ?? "").trim());
+          syntaxErrors.push(`${name} line ${check.line}: ${check.message}`);
+          pendingFix.add(name);
         }
       }
 

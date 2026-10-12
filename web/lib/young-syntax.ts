@@ -68,8 +68,9 @@ class CheckError extends Error {
   }
 }
 
-// A statement keyword inside an expression means the previous line lost its
-// ";" — Python's parser would glue both lines together and fail at run time.
+// A statement keyword right after an operand (e.g. "1 return 0") means the
+// previous line lost its ";" — Python's parser would glue both lines together
+// and fail at run time. After an operator ("1 + let") it may be a variable.
 const STATEMENT_KEYWORDS = new Set(["let", "mut", "return", "CHARIOT", "STRENGTH", "HIEROPHANT", "WORLD", "EMPRESS", "LOVERS", "ritual"]);
 
 function tokenize(src: string): Tok[] {
@@ -107,7 +108,9 @@ function parse(toks: Tok[], srcLen: number) {
       if (t === undefined) throw new CheckError(`expresión sin terminar (falta '${stop}')`, start);
       if (depth === 0 && t === stop) break;
       if (t === "{" || t === "}") throw new CheckError(`falta '${stop}' antes de '${t}'`, here());
-      if (n > 0 && STATEMENT_KEYWORDS.has(t)) throw new CheckError(`falta ';' antes de '${t}'`, toks[i - 1].pos);
+      if (n > 0 && STATEMENT_KEYWORDS.has(t) && /^([A-Za-z_]\w*|\d+|".*"|\))$/.test(toks[i - 1].t)) {
+        throw new CheckError(`falta ';' antes de '${t}'`, toks[i - 1].pos);
+      }
       if (t === "(") depth++;
       else if (t === ")") depth--;
       if (depth < 0) throw new CheckError("paréntesis de cierre de más", here());
