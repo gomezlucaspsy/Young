@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Image from "next/image";
 import Icon from "./Icon";
 import type { SidePanel, Turn } from "./types";
 
@@ -124,7 +125,7 @@ export default function ChatPanel({ turns, input, busy, onInput, onSend, onClear
 
   function submit() {
     if (busy || (!input.trim() && attachments.length === 0)) return;
-    onSend(input, attachments.map(({ preview: _preview, ...attachment }) => attachment));
+    onSend(input, attachments.map(({ name, mimeType, kind, content }) => ({ name, mimeType, kind, content })));
     attachments.forEach((attachment) => attachment.preview && URL.revokeObjectURL(attachment.preview));
     setAttachments([]);
     setAttachmentError("");
@@ -266,7 +267,7 @@ export default function ChatPanel({ turns, input, busy, onInput, onSend, onClear
             <div className="flex flex-wrap gap-1.5 px-2 pt-2">
               {attachments.map((attachment, i) => (
                 <span key={`${attachment.name}-${i}`} className="inline-flex max-w-full items-center gap-1 rounded border border-violet/30 bg-violet/10 px-1.5 py-1 text-[10px] text-zinc-300">
-                  {attachment.preview && <img src={attachment.preview} alt={`Vista previa de ${attachment.name}`} className="h-7 w-7 rounded object-cover" />}
+                  {attachment.preview && <Image src={attachment.preview} alt={`Vista previa de ${attachment.name}`} width={28} height={28} unoptimized className="h-7 w-7 rounded object-cover" />}
                   <Icon name={attachment.kind === "image" ? "files" : "download"} size={11} />
                   <span className="max-w-36 truncate">{attachment.name}</span>
                   <button
