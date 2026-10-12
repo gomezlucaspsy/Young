@@ -10,6 +10,10 @@ to one pane with a bottom tab bar.
 - **FILE_ACTION** — a sandboxed filesystem in `localStorage`
   (`lib/virtual-fs.ts`, bound to React in `lib/vfs-store.ts`). Only `.young`
   files plus the special `updates.txt`. The browser applies the actions.
+- **Downloads and Oracle attachments** — download a file from its editor tab
+  or the MyComputer list. Attach up to five images, PDFs, or text/code files
+  to an Oracle message (2 MB per file, 2.5 MB combined); attachments are sent
+  with that message and are not saved to the browser filesystem.
 - **PC_ACTION + control-plane** — `lib/control-plane.ts` is an in-memory
   register/heartbeat/command-queue store (resets on cold start; the Host
   Agent re-registers on its own). "Conectar mi PC" downloads a launcher from

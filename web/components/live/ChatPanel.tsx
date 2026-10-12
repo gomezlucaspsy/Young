@@ -9,6 +9,7 @@ export type ChatAttachment = {
   mimeType: string;
   kind: "image" | "document" | "text";
   content: string;
+  preview?: string;
 };
 
 const SUGGESTIONS = [
@@ -50,7 +51,7 @@ type Props = {
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_FILES = 5;
-const MAX_TOTAL_BYTES = 3 * 1024 * 1024;
+const MAX_TOTAL_BYTES = 2.5 * 1024 * 1024;
 const MAX_TEXT_CHARS = 100_000;
 const TEXT_TYPES: Record<string, string> = {
   txt: "text/plain",
@@ -88,8 +89,16 @@ async function readAttachment(file: File): Promise<ChatAttachment> {
   const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
   if (file.size > MAX_FILE_BYTES) throw new Error(`${file.name}: el máximo es 2 MB.`);
 
-  if (["image/jpeg", "image/png", "image/gif", "image/webp"].includes(file.type)) {
-    return { name: file.name, mimeType: file.type, kind: "image", content: toBase64(await file.arrayBuffer()) };
+  const imageType = file.type || ({ jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif", webp: "image/webp" } as Record<string, string>)[ext];
+  if (imageType && ["image/jpeg", "image/png", "image/gif", "image/webp"].includes(imageType)) {
+    const buffer = await file.arrayBuffer();
+    return {
+      name: file.name,
+      mimeType: imageType,
+      kind: "image",
+      content: toBase64(buffer),
+      preview: URL.createObjectURL(new Blob([buffer], { type: imageType })),
+    };
   }
   if (file.type === "application/pdf" || ext === "pdf") {
     return { name: file.name, mimeType: "application/pdf", kind: "document", content: toBase64(await file.arrayBuffer()) };
@@ -113,6 +122,14 @@ export default function ChatPanel({ turns, input, busy, onInput, onSend, onClear
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [turns, busy]);
 
+  function submit() {
+    if (busy || (!input.trim() && attachments.length === 0)) return;
+    onSend(input, attachments.map(({ preview: _preview, ...attachment }) => attachment));
+    attachments.forEach((attachment) => attachment.preview && URL.revokeObjectURL(attachment.preview));
+    setAttachments([]);
+    setAttachmentError("");
+  }
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex h-9 shrink-0 items-center justify-between px-4">
@@ -132,7 +149,7 @@ export default function ChatPanel({ turns, input, busy, onInput, onSend, onClear
             <div>
               <p className="font-[family-name:var(--font-display)] text-base text-zinc-100">Young Oracle</p>
               <p className="mt-1 text-xs leading-5 text-zinc-500">
-                Escribe y edita tus rituales .young, lee repos de GitHub y anota mejoras para la app en updates.txt.
+                Escribe y edita tus rituales .young, adjunta imágenes, PDF o código para consultarlos y lee repos de GitHub.
               </p>
             </div>
             <div className="space-y-1.5">
@@ -220,7 +237,7 @@ export default function ChatPanel({ turns, input, busy, onInput, onSend, onClear
             ref={fileInputRef}
             type="file"
             multiple
-            accept="image/jpeg,image/png,image/gif,image/webp,application/pdf,.txt,.md,.markdown,.young,.py,.js,.jsx,.ts,.tsx,.json,.csv,.yaml,.yml,.xml,.html,.css,.sql,.sh,.bat,.log"
+            accept="image/jpeg,image/png,image/gif,image/webp,application/pdf,.jpg,.jpeg,.png,.gif,.webp,.txt,.md,.markdown,.young,.py,.js,.jsx,.ts,.tsx,.json,.csv,.yaml,.yml,.xml,.html,.css,.sql,.sh,.bat,.log"
             className="hidden"
             onChange={async (e) => {
               const selected = Array.from(e.currentTarget.files ?? []);
@@ -230,15 +247,17 @@ export default function ChatPanel({ turns, input, busy, onInput, onSend, onClear
                 setAttachmentError(`Podés adjuntar hasta ${MAX_FILES} archivos por mensaje.`);
                 return;
               }
+              const added: ChatAttachment[] = [];
               try {
-                const added = await Promise.all(selected.map(readAttachment));
+                for (const file of selected) added.push(await readAttachment(file));
                 const totalBytes = [...attachments, ...added].reduce(
                   (sum, file) => sum + (file.kind === "text" ? file.content.length : Math.ceil(file.content.length * 3 / 4)),
                   0,
                 );
-                if (totalBytes > MAX_TOTAL_BYTES) throw new Error("El tamaño combinado máximo es 3 MB.");
+                if (totalBytes > MAX_TOTAL_BYTES) throw new Error("El tamaño combinado máximo es 2,5 MB.");
                 setAttachments((prev) => [...prev, ...added]);
               } catch (err) {
+                added.forEach((attachment) => attachment.preview && URL.revokeObjectURL(attachment.preview));
                 setAttachmentError(String(err).replace(/^Error:\s*/, ""));
               }
             }}
@@ -247,11 +266,15 @@ export default function ChatPanel({ turns, input, busy, onInput, onSend, onClear
             <div className="flex flex-wrap gap-1.5 px-2 pt-2">
               {attachments.map((attachment, i) => (
                 <span key={`${attachment.name}-${i}`} className="inline-flex max-w-full items-center gap-1 rounded border border-violet/30 bg-violet/10 px-1.5 py-1 text-[10px] text-zinc-300">
+                  {attachment.preview && <img src={attachment.preview} alt={`Vista previa de ${attachment.name}`} className="h-7 w-7 rounded object-cover" />}
                   <Icon name={attachment.kind === "image" ? "files" : "download"} size={11} />
                   <span className="max-w-36 truncate">{attachment.name}</span>
                   <button
                     type="button"
-                    onClick={() => setAttachments((prev) => prev.filter((_, index) => index !== i))}
+                    onClick={() => {
+                      if (attachment.preview) URL.revokeObjectURL(attachment.preview);
+                      setAttachments((prev) => prev.filter((_, index) => index !== i));
+                    }}
                     aria-label={`Quitar ${attachment.name}`}
                     className="rounded px-0.5 text-zinc-500 hover:text-zinc-100"
                   >
@@ -269,11 +292,11 @@ export default function ChatPanel({ turns, input, busy, onInput, onSend, onClear
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
-                onSend();
+                submit();
               }
             }}
             rows={2}
-            placeholder="Pedile algo al Oráculo…"
+            placeholder="Pedile algo al Oráculo o adjuntá archivos…"
             aria-label="Mensaje para el Oráculo"
             className="block max-h-40 w-full resize-none bg-transparent px-3 pt-2 text-[13px] outline-none placeholder:text-zinc-600"
           />
@@ -292,11 +315,7 @@ export default function ChatPanel({ turns, input, busy, onInput, onSend, onClear
               <span className="text-[10px] text-zinc-600">Enter envía · Shift+Enter nueva línea</span>
             </div>
             <button
-              onClick={() => {
-                onSend(input, attachments);
-                setAttachments([]);
-                setAttachmentError("");
-              }}
+              onClick={submit}
               disabled={busy || (!input.trim() && attachments.length === 0)}
               aria-label="Enviar"
               className="rounded-md bg-violet p-1.5 text-white hover:brightness-110 disabled:bg-white/10 disabled:text-zinc-500"
