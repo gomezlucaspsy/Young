@@ -1,10 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getCommand, snapshotState } from "@/lib/control-plane";
+import { getAgent, getCommand } from "@/lib/control-plane";
 
-// Used by the browser UI: with no query params, returns the full agents +
-// recent-commands snapshot (to show "online/offline" and let the user pick a
-// target agent). With ?commandId=, returns just that one command's status —
-// used to poll a PC_ACTION result after the chat route enqueues it.
+// Used by the browser UI. The agent id is an unguessable per-browser secret,
+// so there is deliberately no "list every agent" view: ?agentId= returns only
+// that agent, ?commandId= only that command (whose id embeds the agent id).
 export async function GET(request: NextRequest) {
   const commandId = request.nextUrl.searchParams.get("commandId");
   if (commandId) {
@@ -13,5 +12,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ command });
   }
 
-  return NextResponse.json(snapshotState());
+  const agentId = request.nextUrl.searchParams.get("agentId");
+  if (!agentId) return NextResponse.json({ error: "agentId query param is required" }, { status: 400 });
+  return NextResponse.json({ agent: getAgent(agentId) });
 }

@@ -96,6 +96,11 @@ export function heartbeatAgent(agentId: string): AgentState | null {
   return updated;
 }
 
+export function getAgent(agentId: string): AgentState | null {
+  const agent = store.agents.get(agentId);
+  return agent ? updateAgentStatus(agent) : null;
+}
+
 export function listAgents(): AgentState[] {
   return Array.from(store.agents.values())
     .map(updateAgentStatus)

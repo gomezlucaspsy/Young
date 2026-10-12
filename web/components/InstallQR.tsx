@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { usePathname } from "next/navigation";
 
 type InstallPromptEvent = Event & {
   prompt: () => void;
@@ -14,6 +15,10 @@ type InstallPromptEvent = Event & {
  * no separate native build needed).
  */
 export default function InstallQR() {
+  // /live is a full-screen IDE layout with its own "Instalar" entry in the
+  // status bar — it opens this dialog via the young:open-install event instead
+  // of the floating button, which would cover the status bar.
+  const floating = !usePathname()?.startsWith("/live");
   const [open, setOpen] = useState(false);
   const [qrUrl, setQrUrl] = useState("");
   const [pageUrl] = useState(() =>
@@ -39,8 +44,13 @@ export default function InstallQR() {
       e.preventDefault();
       setDeferredPrompt(e as InstallPromptEvent);
     };
+    const openDialog = () => setOpen(true);
     window.addEventListener("beforeinstallprompt", handler);
-    return () => window.removeEventListener("beforeinstallprompt", handler);
+    window.addEventListener("young:open-install", openDialog);
+    return () => {
+      window.removeEventListener("beforeinstallprompt", handler);
+      window.removeEventListener("young:open-install", openDialog);
+    };
   }, []);
 
   useEffect(() => {
@@ -73,12 +83,12 @@ export default function InstallQR() {
 
   return (
     <>
-      <button
+      {floating && <button
         onClick={() => setOpen(true)}
         className="fixed bottom-4 right-4 z-40 rounded-full border border-white/10 bg-black/60 px-4 py-2 text-xs font-medium tracking-tight text-zinc-200 shadow-lg backdrop-blur transition-colors hover:bg-black/80"
       >
         {installed ? "Compartir" : "📱 Instalar"}
-      </button>
+      </button>}
 
       {open && (
         <div

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { enqueueCommand, isAllowedCommandType, type CommandType } from "@/lib/control-plane";
+import { enqueueCommand, getAgent, isAllowedCommandType, type CommandType } from "@/lib/control-plane";
 import { parseFileActions, parsePcActions, stripActions, type FileAction } from "@/lib/virtual-fs";
 import { readRepo } from "@/lib/github-repo";
 
@@ -11,7 +11,14 @@ You can create, read, update, delete, or list files in the user's sandboxed brow
 [FILE_ACTION:update|/|name.young|file|new content]
 [FILE_ACTION:delete|/|name.young|file|]
 [FILE_ACTION:list|/|||]
-Only .young files are allowed. These live only in this browser (localStorage) — they are NOT the user's real disk.
+Only .young files are allowed, plus one special file: updates.txt. These live only in this browser (localStorage) — they are NOT the user's real disk.
+
+updates.txt is the change-request list for the Young app itself. When the user asks for an updates.txt or updates.pdf,
+asks you to note feedback / improvements / bugs about Young, or agrees to one of your suggestions for the app, write
+them there: one concrete, implementable request per line, formatted "[ ] <request>". If updates.txt already exists
+(its current content is given below), update it keeping every existing line (never re-add a request that's already listed); otherwise
+create it. Then tell the user in one short sentence that they can send it from the Updates panel ("Enviar a GitHub",
+or download it as .txt/.pdf) — a bot turns new lines into a pull request that CodeRabbit reviews.
 
 You can read any public GitHub repo the user links you to — no Host Agent needed for this one, it always works:
 [PC_ACTION:read_repo|<github url or owner/repo>[@branch][|path/to/file]]
@@ -33,6 +40,7 @@ type ChatMessage = { role: "user" | "assistant"; text: string };
 type ApiMessage = { role: "user" | "assistant"; content: string };
 
 const MAX_TOOL_ROUNDS = 4;
+const ACTIVE_FILE_MAX_CHARS = 8000;
 
 async function callClaude(apiKey: string, system: string, messages: ApiMessage[]) {
   const res = await fetch("https://api.anthropic.com/v1/messages", {
@@ -69,8 +77,9 @@ export async function POST(request: NextRequest) {
     const body = (await request.json()) as {
       messages: ChatMessage[];
       filesTree?: string;
+      activeFile?: { name?: string; content?: string };
+      updatesFile?: string;
       agentId?: string;
-      agentOnline?: boolean;
     };
 
     const apiMessages: ApiMessage[] = (body.messages ?? [])
@@ -81,16 +90,26 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ reply: "Send a message to get started." });
     }
 
-    const agentActive = Boolean(body.agentId && body.agentOnline);
+    // Trust the server-side heartbeat, not the client's claim that the agent is online.
+    const agentActive = Boolean(body.agentId && getAgent(body.agentId)?.status === "online");
     const system = [
       SYSTEM_PROMPT_BASE,
       "",
       "Current MyComputer (browser) contents:",
       body.filesTree?.trim() || "(empty)",
       "",
+      body.updatesFile?.trim()
+        ? "Current updates.txt (keep every line when you update it):\n```\n" +
+          body.updatesFile.slice(0, ACTIVE_FILE_MAX_CHARS) +
+          "\n```\n"
+        : "",
+      body.activeFile?.name
+        ? `The user has ${body.activeFile.name} open in the editor (possibly unsaved). Its current content:\n` +
+          "```\n" + String(body.activeFile.content ?? "").slice(0, ACTIVE_FILE_MAX_CHARS) + "\n```\n"
+        : "",
       agentActive
         ? `A Host Agent is connected and online (id: ${body.agentId}). The other four PC_ACTION commands may be used.`
-        : "No Host Agent is currently connected — do NOT emit status/list_processes/open_folder/run_young. read_repo still works regardless. If the user asks for a real-computer action, tell them to run young_host_agent.py first.",
+        : 'No Host Agent is currently connected — do NOT emit status/list_processes/open_folder/run_young. read_repo still works regardless. If the user asks for a real-computer action, tell them to click "Conectar mi PC" (bottom-left of the status bar) — it downloads a one-click launcher.',
     ].join("\n");
 
     const allFileActions: FileAction[] = [];

@@ -1,0 +1,152 @@
+name: updates/ -> Claude PR
+
+# Flow: an updates.txt / updates.pdf (any .txt or .pdf) lands in updates/ —
+# either sent with one click from Young Live ("Enviar a GitHub") or uploaded
+# by hand — push to main -> Claude implements the new tasks -> opens a PR ->
+# CodeRabbit reviews it -> coderabbit-feedback.yml lets Claude apply the
+# review -> you merge manually -> Vercel deploys.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "updates/*.txt"
+      - "updates/*.pdf"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: updates-to-pr
+  cancel-in-progress: false
+
+jobs:
+  implement:
+    # Merging the bot's own PR also touches updates/ (tasks marked [x]);
+    # skip that push so the loop doesn't re-trigger itself. Squash merges keep
+    # the "[updates-bot]" title; merge commits mention the updates-bot/ branch.
+    if: ${{ !contains(github.event.head_commit.message, 'updates-bot') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: npm ci --ignore-scripts
+        working-directory: web
+
+      - name: Collect what changed in the updates files
+        id: changes
+        env:
+          BEFORE: ${{ github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            BEFORE="$(git rev-parse HEAD~1)"
+          fi
+          git diff "$BEFORE" HEAD -- 'updates/*.txt' 'updates/*.pdf' > /tmp/updates.diff || true
+          git diff --name-only "$BEFORE" HEAD -- 'updates/*.txt' 'updates/*.pdf' > /tmp/updates.files || true
+          echo "Changed update files:"; cat /tmp/updates.files
+          if [ ! -s /tmp/updates.files ] && [ "$EVENT_NAME" != "workflow_dispatch" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Claude implements the new tasks
+        if: steps.changes.outputs.skip != 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          claude_args: >-
+            --model claude-sonnet-5-5
+            --max-turns 60
+            --allowedTools "Read,Edit,Write,Glob,Grep,Bash(npm --prefix web run build),Bash(npm --prefix web run lint),Bash(python -m py_compile:*),Bash(python young_runner.py:*),Bash(git diff:*),Bash(git status)"
+          prompt: |
+            You are the maintainer bot for Young — a ritualized assembly-like language (.young) with
+            three Live Agent surfaces that must stay in parity:
+              - young_gui.py + young_pc_actions.py + young_host_agent.py (Python / Tkinter)
+              - native/young_studio.c (Win32 C, cannot be built on this Linux runner)
+              - web/ (Next.js 16 App Router on Vercel — read web/AGENTS.md first)
+            All three share the FILE_ACTION / PC_ACTION wire protocol.
+
+            The owner sends a .txt or .pdf into updates/ — normally updates.txt (often written by the
+            Young Oracle itself in MyComputer and sent with "Enviar a GitHub"), sometimes renamed like
+            "updates (2).txt". Implement ONLY the new or changed requests.
+
+            1. Read /tmp/updates.files (which update files changed) and /tmp/updates.diff (the diff).
+               Read the changed file(s) in full (PDFs included).
+               If this was a manual run (empty diff), work on unchecked "[ ]" items in the .txt files
+               under updates/ that are small and concrete; pick at most 3.
+            2. Treat added lines / unchecked "[ ]" items in the diff as tasks. Ignore items that are
+               already "[x]", marked FUTURE, or that need manual work outside the repo (dashboards,
+               secrets, third-party accounts) — leave those unchecked.
+            3. Implement each task matching the existing style. Keep changes focused.
+               Hard rules:
+               - PC actions are a small FIXED allowlist (young_pc_actions.py). Never add a generic
+                 shell / run-command action, on any surface.
+               - Keep the tarot / Jung / Kabbalah vocabulary (CHARIOT IF, ritual, shadow...) — it is
+                 core to the product.
+               - If you change the protocol or a Live Agent behavior, mirror it on the other surfaces
+                 when feasible; otherwise say so in the PR body.
+               - Never commit secrets or edit .env files with real values.
+            4. Verify: `npm --prefix web run lint`, `npm --prefix web run build`,
+               `python -m py_compile <changed .py files>`, and `python young_runner.py sample.young`
+               if you touched the runtime. Fix anything you broke.
+            5. In the changed .txt request file, change "[ ]" to "[x]" for each task you completed (for
+               plain lines without a checkbox, prefix them with "[x]"; for PDFs, skip this step). For any
+               task you skipped or could only partly do, add an indented line under it starting with
+               "-> bot:" explaining why in one sentence.
+            6. Finally write a short Spanish summary for the PR description to /tmp/pr-body.md:
+               what you implemented, what you skipped and why, and what the owner must test (say
+               explicitly if native/ changes need a Windows build).
+               Do not commit or push; a later step opens the PR.
+
+      - name: Discard any bot edits to workflows
+        if: steps.changes.outputs.skip != 'true'
+        run: |
+          git checkout -- .github
+          git clean -fdq -- .github
+
+      - name: Fallback PR body
+        if: steps.changes.outputs.skip != 'true'
+        run: |
+          [ -s /tmp/pr-body.md ] || echo "Cambios generados automáticamente a partir de updates/ (run ${{ github.run_id }})." > /tmp/pr-body.md
+          printf '\n\n---\nCodeRabbit revisa este PR y el bot aplica sus sugerencias (hasta 2 rondas). Mergealo a mano cuando esté listo.\n' >> /tmp/pr-body.md
+
+      - name: Open PR
+        id: pr
+        if: steps.changes.outputs.skip != 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          # A PAT (UPDATES_BOT_TOKEN) makes CI run on the bot's PR too; the
+          # default GITHUB_TOKEN works but GitHub won't trigger workflows from it.
+          token: ${{ secrets.UPDATES_BOT_TOKEN || secrets.GITHUB_TOKEN }}
+          branch: updates-bot/${{ github.run_id }}
+          base: main
+          title: "[updates-bot] Cambios pedidos en updates/"
+          commit-message: "[updates-bot] Implement tasks from updates/"
+          body-path: /tmp/pr-body.md
+          delete-branch: true
+
+      # CodeRabbit skips auto-review on public (OSS) repos until asked.
+      - name: Ask CodeRabbit to review
+        if: steps.pr.outputs.pull-request-number
+        env:
+          GH_TOKEN: ${{ secrets.UPDATES_BOT_TOKEN || secrets.GITHUB_TOKEN }}
+        run: gh pr comment "${{ steps.pr.outputs.pull-request-number }}" -R "${{ github.repository }}" --body "@coderabbitai full review"

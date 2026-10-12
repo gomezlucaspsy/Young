@@ -1,7 +1,10 @@
 // A sandboxed, client-only "computer" filesystem for the Web Live tab — no
-// server, no database. Only .young files live here, and only in this
-// browser's localStorage, mirroring the project-root sandbox that the
+// server, no database. Only .young files live here (plus the one updates.txt
+// request file the Oracle writes for the updates/ -> PR bot), and only in
+// this browser's localStorage, mirroring the project-root sandbox that the
 // native and Python Live tabs enforce on the real filesystem.
+
+import { UPDATES_FILE } from "./updates";
 
 export type FsFile = { type: "file"; content: string; created: string; modified: string };
 export type FsMap = Record<string, FsFile>;
@@ -57,14 +60,19 @@ export function fsTree(fs: FsMap): string {
   return keys.map((p) => `${p} (${fs[p].content.length} chars)`).join("\n");
 }
 
+export function isAllowedName(name: string): boolean {
+  const n = normalizeName(name).toLowerCase();
+  return n.endsWith(".young") || n === UPDATES_FILE;
+}
+
 export function fsApplyAction(fs: FsMap, action: FileAction): { fs: FsMap; result: string } {
   if (action.action === "list") {
     return { fs, result: fsTree(fs) };
   }
 
   const name = action.name ? normalizeName(action.name) : "";
-  if (!name.toLowerCase().endsWith(".young")) {
-    return { fs, result: `ERROR: only .young files are allowed (got "${name || action.path}")` };
+  if (!isAllowedName(name)) {
+    return { fs, result: `ERROR: only .young files (or ${UPDATES_FILE}) are allowed (got "${name || action.path}")` };
   }
 
   const fullPath = fullPathOf(action.path || "/", name);
