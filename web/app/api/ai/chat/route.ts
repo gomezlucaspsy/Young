@@ -49,6 +49,32 @@ type ContentBlock =
 type ApiMessage = { role: "user" | "assistant"; content: string | ContentBlock[] };
 type IncomingMessage = { role?: unknown; text?: unknown; attachments?: unknown };
 
+// Auto mode (the "Auto" switch in the chat): the browser feeds the results of
+// the PC actions you queue back to you as the next user message, so you can
+// work in a loop like an agent instead of stopping after one reply.
+function autoModeSection(agentActive: boolean) {
+  const lines = [
+    "",
+    "AUTO MODE is ON. Work autonomously until the task is actually done, without asking the user for permission between steps.",
+  ];
+  if (agentActive) {
+    lines.push(
+      "After you create or update a .young file, run it in the SAME reply with [PC_ACTION:run_young|name.young].",
+      "Its output comes back in the next message as TOOL_RESULTS. A failed run starts with ERROR and gives file:line:col,",
+      "the offending line with a caret, and the ritual call stack — fix exactly that (FILE_ACTION update) and run it again.",
+      "run_young runs the file from the PC's project folder; if it says the file was not found, tell the user to open that",
+      "folder with \"Abrir carpeta de mi PC\" so your files are written there, and stop.",
+      "When it runs cleanly, finish with a short summary and emit no more actions.",
+    );
+  } else {
+    lines.push(
+      "No Host Agent is connected, so you cannot run code: rely on the syntax check, and mention once that connecting the",
+      "PC (\"Conectar mi PC\") lets you run and fix programs on your own.",
+    );
+  }
+  return lines.join("\n");
+}
+
 const MAX_TOOL_ROUNDS = 4;
 const ACTIVE_FILE_MAX_CHARS = 8000;
 const MAX_ATTACHMENTS = 5;
@@ -153,6 +179,7 @@ export async function POST(request: NextRequest) {
       activeFile?: { name?: string; content?: string };
       updatesFile?: string;
       agentId?: string;
+      autoMode?: boolean;
     };
 
     const result = prepareMessages(Array.isArray(body.messages) ? body.messages : []);
@@ -184,6 +211,7 @@ export async function POST(request: NextRequest) {
       agentActive
         ? `A Host Agent is connected and online (id: ${body.agentId}). The other four PC_ACTION commands may be used.`
         : 'No Host Agent is currently connected — do NOT emit status/list_processes/open_folder/run_young. read_repo still works regardless. If the user asks for a real-computer action, tell them to click "Conectar mi PC" (bottom-left of the status bar) — it downloads a one-click launcher.',
+      body.autoMode ? autoModeSection(agentActive) : "",
     ].join("\n");
 
     const allFileActions: FileAction[] = [];

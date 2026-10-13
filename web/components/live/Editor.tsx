@@ -13,13 +13,27 @@ type Props = {
   onSelectTab: (path: string) => void;
   onCloseTab: (path: string) => void;
   onAskOracle: (prompt: string) => void;
+  // The current syntax error, if any — shown in full under the editor.
+  problem?: { line: number; message: string } | null;
   welcome: React.ReactNode;
 };
 
-export default function Editor({ tabs, activePath, value, onChange, onSave, onDownload, onSelectTab, onCloseTab, onAskOracle, welcome }: Props) {
+export default function Editor({ tabs, activePath, value, onChange, onSave, onDownload, onSelectTab, onCloseTab, onAskOracle, problem, welcome }: Props) {
   const gutterRef = useRef<HTMLDivElement>(null);
+  const textRef = useRef<HTMLTextAreaElement>(null);
   const active = tabs.find((t) => t.path === activePath) ?? null;
-  const lineCount = value.split("\n").length;
+  const lines = value.split("\n");
+  const lineCount = lines.length;
+
+  function goToLine(line: number) {
+    const el = textRef.current;
+    if (!el) return;
+    const start = lines.slice(0, line - 1).reduce((n, l) => n + l.length + 1, 0);
+    el.focus();
+    el.setSelectionRange(start, start + (lines[line - 1]?.length ?? 0));
+    // 24px = leading-6; keep the line roughly a third from the top.
+    el.scrollTop = Math.max(0, (line - 1) * 24 - el.clientHeight / 3);
+  }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Tab" && !e.shiftKey) {
@@ -106,10 +120,13 @@ export default function Editor({ tabs, activePath, value, onChange, onSave, onDo
               className="select-none overflow-hidden py-2 pl-4 pr-3 text-right text-zinc-600"
             >
               {Array.from({ length: lineCount }, (_, i) => (
-                <div key={i}>{i + 1}</div>
+                <div key={i} className={problem?.line === i + 1 ? "font-semibold text-red-400" : undefined}>
+                  {i + 1}
+                </div>
               ))}
             </div>
             <textarea
+              ref={textRef}
               value={value}
               onChange={(e) => onChange(e.target.value)}
               onKeyDown={onKeyDown}
@@ -121,6 +138,28 @@ export default function Editor({ tabs, activePath, value, onChange, onSave, onDo
               className="min-h-0 flex-1 resize-none whitespace-pre bg-transparent py-2 pr-4 text-zinc-200 outline-none"
             />
           </div>
+          {problem && (
+            <div role="alert" className="flex shrink-0 flex-wrap items-start gap-x-3 gap-y-1 border-t border-red-900/50 bg-red-950/30 px-4 py-2 text-xs text-red-200">
+              <Icon name="alert" size={14} className="mt-0.5 shrink-0 text-red-400" />
+              <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">
+                <span className="font-semibold">Línea {problem.line}:</span> {problem.message}
+                {lines[problem.line - 1]?.trim() && (
+                  <code className="mt-1 block truncate font-mono text-[11px] text-red-300/80">{lines[problem.line - 1]}</code>
+                )}
+              </span>
+              <span className="flex shrink-0 gap-1">
+                <button onClick={() => goToLine(problem.line)} className="rounded px-2 py-0.5 hover:bg-white/10">
+                  Ir a la línea
+                </button>
+                <button
+                  onClick={() => onAskOracle(`Arreglá ${active.name}: línea ${problem.line}: ${problem.message}`)}
+                  className="flex items-center gap-1 rounded px-2 py-0.5 hover:bg-white/10"
+                >
+                  <Icon name="sparkles" size={12} /> Arreglar con el Oráculo
+                </button>
+              </span>
+            </div>
+          )}
         </>
       ) : (
         welcome

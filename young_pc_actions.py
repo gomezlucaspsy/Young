@@ -11,8 +11,6 @@ headless (e.g. on a machine with no display attached).
 """
 
 import base64
-import contextlib
-import io
 import json
 import os
 import platform
@@ -24,9 +22,12 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from young_runner import run as run_young
+from young_runner import run_report as run_young_report
 
 ALLOWED_TYPES = ("status", "list_processes", "open_folder", "run_young", "read_repo")
+
+RUN_YOUNG_TIMEOUT_S = 10
+RUN_YOUNG_MAX_CHARS = 6000
 
 GITHUB_API_BASE = "https://api.github.com"
 REPO_TREE_MAX_ENTRIES = 200
@@ -99,14 +100,15 @@ def pc_run_young(root_dir: Path, param: str) -> str:
     if not abs_path.exists():
         return f"ERROR: file not found: /{rel}"
 
-    buf = io.StringIO()
     try:
         src = abs_path.read_text(encoding="utf-8")
-        with contextlib.redirect_stdout(buf):
-            run_young(src)
-    except Exception as ex:
-        return f"ERROR: {ex}\n{buf.getvalue()}"
-    return f"OK: ran /{rel}\n{buf.getvalue()[:4000]}"
+    except OSError as ex:
+        return f"ERROR: could not read /{rel}: {ex}"
+    # The time limit keeps a runaway STRENGTH WHILE from wedging the host agent;
+    # as_text() trims old output, never the error, so the Oracle can fix it.
+    report = run_young_report(src, filename=rel, timeout_s=RUN_YOUNG_TIMEOUT_S)
+    status = f"OK: ran /{rel}" if report.ok else f"ERROR: /{rel} failed"
+    return f"{status}\n{report.as_text(limit=RUN_YOUNG_MAX_CHARS)}"
 
 
 def _parse_repo_ref(raw: str):

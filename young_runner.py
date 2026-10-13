@@ -1,9 +1,12 @@
 import os
+import io
 import re
 import sys
 import math
 import json
+import time
 import argparse
+import contextlib
 import importlib
 from dataclasses import dataclass
 
@@ -13,21 +16,76 @@ class ReturnSignal(Exception):
     value: int
 
 
+class YoungError(Exception):
+    """A syntax or runtime error tied to a line of the .young source.
+
+    str() is a one-line summary (safe to show anywhere); format_young_error()
+    renders the full report with the source line, a caret and the ritual
+    call stack."""
+
+    def __init__(self, kind, message, line=None, col=None, ritual=None):
+        super().__init__(message)
+        self.kind = kind
+        self.message = message
+        self.line = line
+        self.col = col
+        # (ritual, line) pairs, innermost first
+        self.frames = [(ritual, line)] if ritual else []
+        self.pending_call_site = False
+
+    def __str__(self):
+        if self.line is None:
+            return f"{self.kind}: {self.message}"
+        return f"{self.kind} en línea {self.line}:{self.col or 1}: {self.message}"
+
+
+class Tok(str):
+    """A token that still compares/joins like a plain str but knows where it came from."""
+
+    line = 1
+    col = 1
+
+
+class Stmt(tuple):
+    """A statement node: the same tuple as before, plus the .line/.col it started at."""
+
+    line = None
+    col = None
+
+
+def _stmt(tok, *parts):
+    node = Stmt(parts)
+    node.line = getattr(tok, "line", None)
+    node.col = getattr(tok, "col", None)
+    return node
+
+
+# A statement keyword right after an operand (e.g. "1 return 0") means the
+# previous line lost its ";". Mirrors STATEMENT_KEYWORDS in web/lib/young-syntax.ts.
+STATEMENT_KEYWORDS = {"let", "mut", "return", "CHARIOT", "STRENGTH", "HIEROPHANT", "WORLD", "EMPRESS", "LOVERS", "ritual"}
+_OPERAND_RE = re.compile(r'^([A-Za-z_]\w*|\d+|".*"|\))$')
+
+
 def tokenize(src: str):
     token_re = re.compile(
         r'\s+|#.*|<=|>=|==|!=|&&|\|\||->|[{}();,:.]|[+\-*/%<>]=?|=|\"[^\"\\]*(?:\\.[^\"\\]*)*\"|\d+|[A-Za-z_][A-Za-z0-9_]*'
     )
     tokens = []
     pos = 0
+    line, line_start = 1, 0
     while pos < len(src):
         m = token_re.match(src, pos)
         if not m:
-            raise SyntaxError(f"Unexpected character at {pos}: {src[pos:pos+20]}")
+            raise YoungError("SyntaxError", f"carácter inesperado: {src[pos:pos+15]!r}", line, pos - line_start + 1)
         t = m.group(0)
+        if t.strip() and not t.startswith("#"):
+            tok = Tok(t)
+            tok.line, tok.col = line, pos - line_start + 1
+            tokens.append(tok)
+        if "\n" in t:
+            line += t.count("\n")
+            line_start = pos + t.rindex("\n") + 1
         pos = m.end()
-        if t.strip() == "" or t.startswith("#"):
-            continue
-        tokens.append(t)
     return tokens
 
 
@@ -39,12 +97,21 @@ class Parser:
     def peek(self):
         return self.toks[self.i] if self.i < len(self.toks) else None
 
+    def error(self, message, tok=None):
+        """Raise a SyntaxError at tok (default: the current token, or end of file)."""
+        if tok is None:
+            tok = self.peek()
+        if tok is None and self.toks:
+            last = self.toks[-1]
+            raise YoungError("SyntaxError", message, last.line, last.col + len(last))
+        raise YoungError("SyntaxError", message, getattr(tok, "line", None), getattr(tok, "col", None))
+
     def pop(self, expected=None):
         t = self.peek()
         if t is None:
-            raise SyntaxError("Unexpected end of input")
+            self.error(f"falta '{expected}' al final del archivo" if expected else "el archivo termina antes de tiempo")
         if expected is not None and t != expected:
-            raise SyntaxError(f"Expected '{expected}', got '{t}'")
+            self.error(f"se esperaba '{expected}' y vino '{t}'")
         self.i += 1
         return t
 
@@ -55,10 +122,12 @@ class Parser:
             if self.peek() == "use":
                 imports.append(self.parse_use_decl())
                 continue
+            if self.peek() != "ritual":
+                self.error(f"se esperaba 'ritual' y vino '{self.peek()}'")
             name, params, body = self.parse_ritual_decl()
             rituals[name] = (params, body)
         if "main" not in rituals:
-            raise SyntaxError("Program must define ritual main()")
+            raise YoungError("SyntaxError", "falta 'ritual main()'", 1, 1)
         return imports, rituals
 
     def parse_use_decl(self):
@@ -98,11 +167,18 @@ class Parser:
         self.pop("{")
         stmts = []
         while self.peek() != "}":
+            if self.peek() is None:
+                self.error("falta '}'")
             stmts.append(self.parse_stmt())
         self.pop("}")
         return ("block", stmts)
 
     def parse_stmt(self):
+        start = self.peek()
+        node = self._parse_stmt_body()
+        return _stmt(start, *node)
+
+    def _parse_stmt_body(self):
         t = self.peek()
         if t in ("let", "mut"):
             return self.parse_vardecl()
@@ -183,6 +259,8 @@ class Parser:
         else_block = None
         if self.peek() in ("else", "ELSE"):
             self.pop()
+            if self.peek() != "{":
+                self.error("después de ELSE va un bloque { } (no hay 'else if')")
             else_block = self.parse_block()
         return ("if", cond, then_block, else_block)
 
@@ -198,19 +276,28 @@ class Parser:
         return ("while", cond, body)
 
     def parse_expr_until(self, stop_token):
+        start = self.peek()
         depth = 0
         parts = []
         while True:
             t = self.peek()
             if t is None:
-                raise SyntaxError("Unterminated expression")
+                self.error(f"expresión sin terminar (falta '{stop_token}')", start)
             if depth == 0 and t == stop_token:
                 break
+            if t in ("{", "}"):
+                self.error(f"falta '{stop_token}' antes de '{t}'")
+            if parts and t in STATEMENT_KEYWORDS and _OPERAND_RE.match(parts[-1]):
+                self.error(f"falta ';' antes de '{t}'", parts[-1])
             if t == "(":
                 depth += 1
             elif t == ")":
                 depth -= 1
+                if depth < 0:
+                    self.error("paréntesis de cierre de más")
             parts.append(self.pop())
+        if depth != 0:
+            self.error("paréntesis sin cerrar", start)
 
         if parts and parts[0] == "EMPRESS":
             inner = " ".join(parts[1:])
@@ -235,6 +322,9 @@ class Runtime:
         self.tasks = {}
         self.next_task_id = 1
         self.modules = {}
+        self._ritual_stack = []
+        self.timeout_s = None
+        self.deadline = None
         self._load_imports()
 
     def _load_imports(self):
@@ -263,10 +353,17 @@ class Runtime:
         if len(args) != len(params):
             raise TypeError(f"Ritual '{name}' expects {len(params)} args, got {len(args)}")
         env = {param: arg for param, arg in zip(params, args)}
+        self._ritual_stack.append(name)
         try:
             self.exec_block(body, env)
         except ReturnSignal as r:
             return r.value
+        except YoungError as err:
+            # The caller's exec_block records the line this ritual was called from.
+            err.pending_call_site = True
+            raise
+        finally:
+            self._ritual_stack.pop()
         return 0
 
     def eval_expr(self, expr: str, env: dict):
@@ -295,47 +392,151 @@ class Runtime:
     def exec_block(self, block, env):
         _, stmts = block
         for stmt in stmts:
-            kind = stmt[0]
-            if kind == "vardecl":
-                _, _mut, name, init = stmt
-                env[name] = self.eval_expr(init, env)
-            elif kind == "assign":
-                _, name, expr = stmt
-                if name not in env:
-                    raise NameError(f"Variable '{name}' not declared")
-                env[name] = self.eval_expr(expr, env)
-            elif kind == "expr":
-                _, expr = stmt
-                self.eval_expr(expr, env)
-            elif kind == "if":
-                _, cond, then_block, else_block = stmt
-                if self.eval_expr(cond, env):
-                    self.exec_block(then_block, env)
-                elif else_block is not None:
-                    self.exec_block(else_block, env)
-            elif kind == "while":
-                _, cond, body = stmt
-                while self.eval_expr(cond, env):
-                    self.exec_block(body, env)
-            elif kind == "return":
-                _, expr = stmt
-                raise ReturnSignal(int(self.eval_expr(expr, env)))
-            elif kind == "halt":
-                raise ReturnSignal(0)
-            elif kind == "spawn":
-                _, expr = stmt
-                self._spawn_value(self.eval_expr(expr, env))
-            elif kind == "join":
-                _, expr = stmt
-                self._join_handle(self.eval_expr(expr, env))
-            elif kind == "cost":
-                _, body = stmt
-                self.exec_block(body, env)
-            else:
-                raise RuntimeError(f"Unknown statement kind: {kind}")
+            try:
+                self.exec_stmt(stmt, env)
+            except ReturnSignal:
+                raise
+            except YoungError as err:
+                if err.pending_call_site and self._ritual_stack:
+                    err.frames.append((self._ritual_stack[-1], getattr(stmt, "line", None)))
+                    err.pending_call_site = False
+                raise
+            except RecursionError:
+                raise self._runtime_error(stmt, "recursión demasiado profunda (¿un ritual que se llama a sí mismo sin caso base?)") from None
+            except Exception as ex:
+                raise self._runtime_error(stmt, _describe_python_error(ex)) from ex
 
-    def run(self):
+    def _runtime_error(self, stmt, message):
+        ritual = self._ritual_stack[-1] if self._ritual_stack else None
+        return YoungError("RuntimeError", message, getattr(stmt, "line", None), getattr(stmt, "col", None), ritual)
+
+    def exec_stmt(self, stmt, env):
+        kind = stmt[0]
+        if kind == "vardecl":
+            _, _mut, name, init = stmt
+            env[name] = self.eval_expr(init, env)
+        elif kind == "assign":
+            _, name, expr = stmt
+            if name not in env:
+                raise NameError(f"Variable '{name}' not declared")
+            env[name] = self.eval_expr(expr, env)
+        elif kind == "expr":
+            _, expr = stmt
+            self.eval_expr(expr, env)
+        elif kind == "if":
+            _, cond, then_block, else_block = stmt
+            if self.eval_expr(cond, env):
+                self.exec_block(then_block, env)
+            elif else_block is not None:
+                self.exec_block(else_block, env)
+        elif kind == "while":
+            _, cond, body = stmt
+            while self.eval_expr(cond, env):
+                if self.deadline is not None and time.monotonic() > self.deadline:
+                    raise YoungError(
+                        "RuntimeError",
+                        f"se pasó el tiempo límite ({self.timeout_s:g}s): ¿el STRENGTH WHILE nunca termina?",
+                        stmt.line, stmt.col, self._ritual_stack[-1] if self._ritual_stack else None,
+                    )
+                self.exec_block(body, env)
+        elif kind == "return":
+            _, expr = stmt
+            raise ReturnSignal(int(self.eval_expr(expr, env)))
+        elif kind == "halt":
+            raise ReturnSignal(0)
+        elif kind == "spawn":
+            _, expr = stmt
+            self._spawn_value(self.eval_expr(expr, env))
+        elif kind == "join":
+            _, expr = stmt
+            self._join_handle(self.eval_expr(expr, env))
+        elif kind == "cost":
+            _, body = stmt
+            self.exec_block(body, env)
+        else:
+            raise RuntimeError(f"Unknown statement kind: {kind}")
+
+    def run(self, timeout_s=None):
+        self.timeout_s = timeout_s
+        self.deadline = time.monotonic() + timeout_s if timeout_s else None
         return int(self._call_ritual("main", []))
+
+
+_PY_ERROR_HINTS = {
+    "ZeroDivisionError": "división por cero",
+    "NameError": "nombre no definido",
+    "TypeError": "tipos incompatibles",
+    "ValueError": "valor inválido",
+    "AttributeError": "atributo inexistente",
+    "KeyError": "clave inexistente",
+    "IndexError": "índice fuera de rango",
+}
+
+
+def _describe_python_error(ex):
+    """Turn an exception from an evaluated expression into a Young-facing message."""
+    name = type(ex).__name__
+    if isinstance(ex, SyntaxError):
+        return f"expresión inválida: {ex.msg} (revisá operadores, comillas y paréntesis)"
+    if isinstance(ex, ZeroDivisionError):
+        return "división por cero"
+    if isinstance(ex, NameError) and getattr(ex, "name", None):
+        return f"'{ex.name}' no está definido (¿falta declararlo con mut/let o es un ritual que no existe?)"
+    hint = _PY_ERROR_HINTS.get(name)
+    return f"{hint}: {ex}" if hint else f"{name}: {ex}"
+
+
+def format_young_error(err, src=None, filename=None):
+    """Full, human-readable report: file:line:col, the offending line with a caret,
+    and the ritual call stack. Works for any exception, not just YoungError."""
+    if not isinstance(err, YoungError):
+        return f"{type(err).__name__}: {err}"
+    where = filename or "<young>"
+    if err.line is not None:
+        where += f":{err.line}:{err.col or 1}"
+    out = [f"{where}: {err.kind}: {err.message}"]
+    lines = src.splitlines() if src else []
+    if err.line is not None and 1 <= err.line <= len(lines):
+        code = lines[err.line - 1]
+        gutter = f"{err.line:>5} | "
+        out.append(gutter + code)
+        out.append(" " * (len(gutter) + max((err.col or 1) - 1, 0)) + "^")
+    for i, (ritual, line) in enumerate(err.frames):
+        prefix = "  en el ritual" if i == 0 else "  llamado desde"
+        out.append(f"{prefix} {ritual}" + (f" (línea {line})" if line else ""))
+    return "\n".join(out)
+
+
+@dataclass
+class RunReport:
+    ok: bool
+    exit_code: int
+    output: str
+    error: str = ""
+
+    def as_text(self, limit=None):
+        """Output first, then the full error. When the whole thing doesn't fit in
+        `limit`, the *start* of the output is dropped — never the error."""
+        text = self.output.rstrip()
+        if not self.ok:
+            text = (text + "\n" if text else "") + self.error
+        else:
+            text = (text + "\n" if text else "") + f"(exit code {self.exit_code})"
+        if limit and len(text) > limit:
+            text = "…(salida recortada)…\n" + text[-(limit - 24):]
+        return text
+
+
+def run_report(src: str, filename=None, timeout_s=None) -> RunReport:
+    """Parse + run, capturing stdout; never raises. Shared by the GUI, the
+    PC_ACTION run_young and the CLI so all three show errors the same way."""
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            code = run(src, timeout_s=timeout_s)
+        return RunReport(True, code, buf.getvalue())
+    except Exception as ex:
+        return RunReport(False, 1, buf.getvalue(), format_young_error(ex, src, filename))
 
 
 def _collect_exprs_from_block(block):
@@ -446,8 +647,10 @@ class CTranspiler:
         if kind == "expr":
             _, expr = stmt
             expr = expr.strip()
-            if expr.startswith("print(") and expr.endswith(")"):
-                inner = expr[len("print("):-1].strip()
+            # Parsed expressions are space-joined tokens: "print ( x )".
+            m = re.match(r"^print\s*\((.*)\)$", expr)
+            if m:
+                inner = m.group(1).strip()
                 return [f"{pre}YOUNG_PRINT({self._expr_to_c(inner)});"]
             return [f"{pre}(void)({self._expr_to_c(expr)});"]
         if kind == "if":
@@ -497,10 +700,10 @@ class CTranspiler:
         return c_expr
 
 
-def run(src: str) -> int:
+def run(src: str, timeout_s=None) -> int:
     tokens = tokenize(src)
     imports, rituals = Parser(tokens).parse_program()
-    return Runtime(imports, rituals).run()
+    return Runtime(imports, rituals).run(timeout_s=timeout_s)
 
 
 def transpile_to_c(src: str, strict_c_profile=False) -> str:
@@ -584,7 +787,17 @@ def main():
         action="store_true",
         help="Reject non-C-friendly constructs (recommended for transpilation)",
     )
+    arg_parser.add_argument(
+        "--timeout", type=float, default=0,
+        help="Abort a STRENGTH WHILE loop that runs longer than this many seconds (0 = no limit)",
+    )
     args = arg_parser.parse_args()
+
+    # Piped (native Studio, host agent): emit UTF-8 so accents in error
+    # messages survive instead of arriving in the console code page.
+    for stream in (sys.stdout, sys.stderr):
+        if not stream.isatty() and hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
 
     input_file = args.input_file if args.input_file else _resolve_input_file(sys.argv)
     if input_file is None:
@@ -599,13 +812,24 @@ def main():
     with open(input_file, "r", encoding="utf-8") as f:
         src = f.read()
 
+    name = os.path.basename(input_file)
     if args.emit_c:
-        c_src = transpile_to_c(src, strict_c_profile=args.strict_c_profile)
+        try:
+            c_src = transpile_to_c(src, strict_c_profile=args.strict_c_profile)
+        except Exception as ex:
+            print(format_young_error(ex, src, name), file=sys.stderr)
+            sys.exit(1)
         with open(args.emit_c, "w", encoding="utf-8", newline="\n") as f:
             f.write(c_src)
         print(f"Transpiled C written to: {args.emit_c}")
 
-    code = run(src)
+    try:
+        code = run(src, timeout_s=args.timeout or None)
+    except Exception as ex:
+        # A clean, located report instead of the interpreter's own Python traceback.
+        sys.stdout.flush()
+        print(format_young_error(ex, src, name), file=sys.stderr)
+        sys.exit(1)
     print(f"Young file: {input_file}")
     print(f"Young program exited with code {code}")
     sys.exit(code)
