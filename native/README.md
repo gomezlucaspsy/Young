@@ -71,9 +71,13 @@ The GUI can:
 
 ## Live Agent + MyComputer
 
-Young Studio now includes a live text agent panel that can modify the local project using a constrained MyComputer protocol.
+Young Studio is a single consolidated view — chat with Young Oracle on the
+left, a MyComputer file panel (list, editor, New/Save/Run/Delete) on the
+right, and a Send/Mic input row at the bottom. Everything rarely touched
+(API key, voice toggle, rebuild native binary) lives behind the Settings
+button instead of cluttering the main view — no tabs, no Compose/Run split.
 
-It also includes microphone capture for Live mode on Windows (8-second dictation capture per click).
+It also includes microphone capture on Windows (8-second dictation capture per click).
 
 Supported MyComputer actions:
 - `create` a `.young` file
@@ -93,9 +97,31 @@ Safety rules:
 - Actions are constrained to the current project root.
 - Path traversal outside project root is blocked.
 - Only `.young` files can be created/read/updated.
+- If the model narrates a create ("saved as foo.young ...") but forgets the
+  `FILE_ACTION` tag, the parser falls back to detecting a bare `*.young`
+  filename plus a fenced code block in the reply and creates it anyway
+  (logged in the transcript as `auto-detected create`).
+
+## PC_ACTION — real-computer status & ops
+
+Beyond the sandboxed `.young` file ops above, the Live Agent can check on or
+act within the real machine through a small **fixed** set of commands —
+there is deliberately no generic "run shell command" action, only these four:
+
+```text
+[PC_ACTION:status|]              disk free/total + RAM in use, no param
+[PC_ACTION:list_processes|]      read-only Tasklist snapshot, no param
+[PC_ACTION:open_folder|]         opens the project root in Explorer, no param
+[PC_ACTION:run_young|name.young] runs an existing project script and returns its output
+```
+
+Every `PC_ACTION` is echoed to the Live transcript as `⚙ SYSTEM: type(param) -> result`
+the moment it runs, so nothing touches the real machine invisibly.
+`run_young` is sandboxed the same way `FILE_ACTION` is — path traversal and
+non-`.young` targets are rejected.
 
 Microphone notes:
 - Uses Windows speech recognition via PowerShell + `System.Speech`.
-- Click `Mic` in the Live panel, speak for up to ~8 seconds, then send/edit the recognized text.
+- Click `Mic` next to the chat input, speak for up to ~8 seconds, then send/edit the recognized text.
 - Mic and voice playback run in hidden background PowerShell processes (no console popup).
-- Enable/disable assistant voice with the `Voice reply` toggle in the Live tab.
+- Enable/disable assistant voice with the `Voice reply` toggle in Settings.
