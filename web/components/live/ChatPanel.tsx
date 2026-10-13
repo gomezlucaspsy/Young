@@ -43,6 +43,12 @@ type Props = {
   turns: Turn[];
   input: string;
   busy: boolean;
+  // Auto mode: the Oracle keeps going on its own (runs what it writes on your
+  // PC, reads the result, fixes errors) until the task is done.
+  autoMode: boolean;
+  onToggleAuto: () => void;
+  onStop: () => void;
+  stopping: boolean;
   onInput: (v: string) => void;
   onSend: (text?: string, attachments?: ChatAttachment[]) => void;
   onClear: () => void;
@@ -113,7 +119,20 @@ async function readAttachment(file: File): Promise<ChatAttachment> {
   throw new Error(`${file.name}: formato no compatible. Usá imágenes, PDF o archivos de texto/código.`);
 }
 
-export default function ChatPanel({ turns, input, busy, onInput, onSend, onClear, onOpenFile, onOpenPanel }: Props) {
+export default function ChatPanel({
+  turns,
+  input,
+  busy,
+  autoMode,
+  onToggleAuto,
+  onStop,
+  stopping,
+  onInput,
+  onSend,
+  onClear,
+  onOpenFile,
+  onOpenPanel,
+}: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
@@ -137,11 +156,29 @@ export default function ChatPanel({ turns, input, busy, onInput, onSend, onClear
         <span className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-400">
           <Icon name="sparkles" size={13} className="text-violet" /> Oráculo
         </span>
-        {turns.length > 0 && (
-          <button onClick={onClear} className="rounded px-1.5 py-0.5 text-[11px] text-zinc-500 hover:bg-white/5 hover:text-zinc-300">
-            Nueva conversación
+        <span className="flex items-center gap-1">
+          <button
+            onClick={onToggleAuto}
+            role="switch"
+            aria-checked={autoMode}
+            title={
+              autoMode
+                ? "Modo automático: el Oráculo ejecuta lo que escribe en tu PC, lee los errores y los corrige solo, hasta terminar."
+                : "Modo manual: el Oráculo responde una vez por mensaje."
+            }
+            className={`flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] ${
+              autoMode ? "border-violet/60 bg-violet/15 text-violet" : "border-white/10 text-zinc-500 hover:text-zinc-300"
+            }`}
+          >
+            <span className={`h-1.5 w-1.5 rounded-full ${autoMode ? "bg-violet" : "bg-zinc-600"}`} />
+            Auto
           </button>
-        )}
+          {turns.length > 0 && (
+            <button onClick={onClear} className="rounded px-1.5 py-0.5 text-[11px] text-zinc-500 hover:bg-white/5 hover:text-zinc-300">
+              Nueva conversación
+            </button>
+          )}
+        </span>
       </div>
 
       <div ref={scrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 pb-4 text-[13px] leading-6" aria-live="polite">
@@ -168,6 +205,14 @@ export default function ChatPanel({ turns, input, busy, onInput, onSend, onClear
         )}
 
         {turns.map((t) => {
+          if (t.role === "user" && t.auto) {
+            return (
+              <details key={t.id} className="rounded-md border border-violet/20 bg-violet/[0.04] px-3 py-1.5 text-[11px] text-zinc-400">
+                <summary className="cursor-pointer select-none text-violet/90">↻ Auto: resultados enviados al Oráculo</summary>
+                <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-zinc-400">{t.text}</pre>
+              </details>
+            );
+          }
           if (t.role === "user") {
             return (
               <div key={t.id} className="rounded-md bg-white/[0.05] px-3 py-2 text-zinc-100">
@@ -205,10 +250,30 @@ export default function ChatPanel({ turns, input, busy, onInput, onSend, onClear
               <span className={t.pending ? "animate-pulse text-zinc-500" : t.ok ? "text-emerald-400" : "text-red-400"}>
                 {t.pending ? "…" : t.ok ? "✓" : "✕"}
               </span>
-              <span className="min-w-0 flex-1 truncate">{t.text}</span>
+              {/* a failure is never cut off: wrap it instead of truncating */}
+              <span className={`min-w-0 flex-1 ${t.ok || t.pending ? "truncate" : "whitespace-pre-wrap break-words text-red-300"}`}>{t.text}</span>
               {clickable && <Icon name="chevron" size={12} className="text-zinc-600" />}
             </>
           );
+          const detail = t.detail ? (
+            <pre
+              className={`mx-2 mt-1 max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md border p-2 font-mono text-[11px] leading-5 ${
+                t.ok ? "border-white/[0.06] bg-black/40 text-zinc-300" : "border-red-900/60 bg-red-950/30 text-red-200"
+              }`}
+            >
+              {t.detail}
+            </pre>
+          ) : null;
+          if (detail) {
+            return (
+              <div key={t.id}>
+                <div className="flex items-start gap-2 px-2 py-1 font-mono text-[11px] text-zinc-500" title={t.text}>
+                  {body}
+                </div>
+                {detail}
+              </div>
+            );
+          }
           return clickable ? (
             <button
               key={t.id}
@@ -227,7 +292,13 @@ export default function ChatPanel({ turns, input, busy, onInput, onSend, onClear
 
         {busy && (
           <div className="flex items-center gap-2 text-xs text-zinc-500">
-            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-violet" /> El Oráculo está pensando…
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-violet" />
+            <span className="flex-1">{stopping ? "Deteniendo después de este paso…" : autoMode ? "El Oráculo está trabajando en modo automático…" : "El Oráculo está pensando…"}</span>
+            {autoMode && !stopping && (
+              <button onClick={onStop} className="rounded border border-white/10 px-2 py-0.5 text-[11px] text-zinc-300 hover:bg-white/5">
+                Detener
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -313,7 +384,9 @@ export default function ChatPanel({ turns, input, busy, onInput, onSend, onClear
               >
                 <Icon name="upload" size={14} />
               </button>
-              <span className="text-[10px] text-zinc-600">Enter envía · Shift+Enter nueva línea</span>
+              <span className="text-[10px] text-zinc-600">
+                Enter envía · Shift+Enter nueva línea{autoMode ? " · modo automático" : ""}
+              </span>
             </div>
             <button
               onClick={submit}

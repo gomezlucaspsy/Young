@@ -279,3 +279,133 @@ cleanup:
     if (h_session) WinHttpCloseHandle(h_session);
     return rc;
 }
+
+int github_get(
+    const char* url_path,
+    char* out_text,
+    size_t out_text_size,
+    char* out_error,
+    size_t out_error_size
+) {
+    HINTERNET h_session = NULL;
+    HINTERNET h_connect = NULL;
+    HINTERNET h_request = NULL;
+    int rc = 1;
+
+    if (!url_path || url_path[0] == '\0') {
+        write_err(out_error, out_error_size, "path is empty");
+        return 2;
+    }
+
+    wchar_t path_wide[2048];
+    if (utf8_to_wide(url_path, path_wide, (int)(sizeof(path_wide) / sizeof(path_wide[0]))) <= 0) {
+        write_err(out_error, out_error_size, "path encoding failed");
+        return 2;
+    }
+
+    h_session = WinHttpOpen(L"young-native/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!h_session) {
+        write_err(out_error, out_error_size, "WinHttpOpen failed");
+        goto cleanup;
+    }
+
+    h_connect = WinHttpConnect(h_session, L"api.github.com", INTERNET_DEFAULT_HTTPS_PORT, 0);
+    if (!h_connect) {
+        write_err(out_error, out_error_size, "WinHttpConnect failed");
+        goto cleanup;
+    }
+
+    h_request = WinHttpOpenRequest(h_connect, L"GET", path_wide, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+    if (!h_request) {
+        write_err(out_error, out_error_size, "WinHttpOpenRequest failed");
+        goto cleanup;
+    }
+
+    char headers_utf8[768];
+    char token_line[512] = "";
+    const char* token = getenv("GITHUB_TOKEN");
+    if (token && token[0]) {
+        snprintf(token_line, sizeof(token_line), "Authorization: Bearer %s\r\n", token);
+    }
+    snprintf(
+        headers_utf8,
+        sizeof(headers_utf8),
+        "Accept: application/vnd.github+json\r\nX-GitHub-Api-Version: 2022-11-28\r\n%s",
+        token_line
+    );
+
+    wchar_t headers_wide[1536];
+    if (utf8_to_wide(headers_utf8, headers_wide, (int)(sizeof(headers_wide) / sizeof(headers_wide[0]))) <= 0) {
+        write_err(out_error, out_error_size, "Header encoding failed");
+        goto cleanup;
+    }
+
+    if (!WinHttpSendRequest(h_request, headers_wide, (DWORD)-1L, WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) {
+        write_err(out_error, out_error_size, "WinHttpSendRequest failed");
+        goto cleanup;
+    }
+
+    if (!WinHttpReceiveResponse(h_request, NULL)) {
+        write_err(out_error, out_error_size, "WinHttpReceiveResponse failed");
+        goto cleanup;
+    }
+
+    DWORD status = 0;
+    DWORD status_size = sizeof(status);
+    WinHttpQueryHeaders(h_request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &status, &status_size, WINHTTP_NO_HEADER_INDEX);
+
+    char* response = NULL;
+    size_t response_size = 0;
+
+    for (;;) {
+        DWORD available = 0;
+        if (!WinHttpQueryDataAvailable(h_request, &available)) {
+            write_err(out_error, out_error_size, "WinHttpQueryDataAvailable failed");
+            free(response);
+            goto cleanup;
+        }
+        if (available == 0) break;
+
+        char* next = (char*)realloc(response, response_size + available + 1);
+        if (!next) {
+            write_err(out_error, out_error_size, "Out of memory");
+            free(response);
+            goto cleanup;
+        }
+        response = next;
+
+        DWORD read_bytes = 0;
+        if (!WinHttpReadData(h_request, response + response_size, available, &read_bytes)) {
+            write_err(out_error, out_error_size, "WinHttpReadData failed");
+            free(response);
+            goto cleanup;
+        }
+        response_size += read_bytes;
+        response[response_size] = '\0';
+    }
+
+    if (status < 200 || status >= 300) {
+        if (response) {
+            snprintf(out_error, out_error_size, "HTTP %lu: %.200s", (unsigned long)status, response);
+        } else {
+            snprintf(out_error, out_error_size, "HTTP %lu", (unsigned long)status);
+        }
+        free(response);
+        goto cleanup;
+    }
+
+    if (!response) {
+        write_err(out_error, out_error_size, "Empty response");
+        goto cleanup;
+    }
+
+    snprintf(out_text, out_text_size, "%s", response);
+    free(response);
+    rc = 0;
+
+cleanup:
+    if (h_request) WinHttpCloseHandle(h_request);
+    if (h_connect) WinHttpCloseHandle(h_connect);
+    if (h_session) WinHttpCloseHandle(h_session);
+    return rc;
+}

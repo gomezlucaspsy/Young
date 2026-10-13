@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { fsApplyAction, fsList, fsTree, type FileAction } from "@/lib/virtual-fs";
 import { useAgentId, useVfs, vfsCommit, vfsCurrent } from "@/lib/vfs-store";
@@ -41,6 +41,45 @@ function downloadTextFile(name: string, content: string) {
 
 let nextId = 1;
 const newId = () => nextId++;
+
+// Auto mode: how many times the Oracle may continue on its own (tool results →
+// next Oracle turn) after one user message before it has to stop and report.
+const AUTO_MAX_STEPS = 6;
+const AUTO_MODE_KEY = "young:auto-mode";
+// Cap on one PC result fed back to the Oracle; the tail (the error) is kept.
+const AUTO_RESULT_MAX_CHARS = 6000;
+
+// The Auto switch is a per-browser preference (localStorage), read through
+// useSyncExternalStore so the server render and hydration agree.
+let autoModeMemory = false; // fallback when storage is blocked
+function readAutoMode() {
+  try {
+    return localStorage.getItem(AUTO_MODE_KEY) === "1";
+  } catch {
+    return autoModeMemory;
+  }
+}
+function writeAutoMode(on: boolean) {
+  autoModeMemory = on;
+  try {
+    localStorage.setItem(AUTO_MODE_KEY, on ? "1" : "0");
+  } catch {
+    // storage blocked — the in-memory value still drives this tab
+  }
+  window.dispatchEvent(new Event(AUTO_MODE_KEY));
+}
+function subscribeAutoMode(cb: () => void) {
+  window.addEventListener(AUTO_MODE_KEY, cb);
+  window.addEventListener("storage", cb);
+  return () => {
+    window.removeEventListener(AUTO_MODE_KEY, cb);
+    window.removeEventListener("storage", cb);
+  };
+}
+
+function keepTail(text: string, max: number) {
+  return text.length <= max ? text : "…(recortado)…\n" + text.slice(-max);
+}
 
 async function pollCommand(commandId: string): Promise<{ result: string; ok: boolean }> {
   for (let i = 0; i < 30; i++) {
@@ -84,9 +123,20 @@ export default function LivePage() {
   const [activePath, setActivePath] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
 
-  const [turns, setTurns] = useState<Turn[]>([]);
+  const [turns, setTurnsState] = useState<Turn[]>([]);
+  // Mirror of `turns` readable mid-await: auto mode builds the next request
+  // from it after polling, when the closure's `turns` is already stale.
+  const turnsRef = useRef<Turn[]>([]);
+  const setTurns = (next: Turn[] | ((prev: Turn[]) => Turn[])) => {
+    turnsRef.current = typeof next === "function" ? next(turnsRef.current) : next;
+    setTurnsState(turnsRef.current);
+  };
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const autoMode = useSyncExternalStore(subscribeAutoMode, readAutoMode, () => false);
+  const toggleAuto = () => writeAutoMode(!autoMode);
+  const [stopping, setStopping] = useState(false);
+  const stopRef = useRef(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   // A real folder on this PC, opened with the browser's native permission
   // prompt (File System Access API) — every change is mirrored back to it.
@@ -272,25 +322,51 @@ export default function LivePage() {
   }
 
   // ── Chat ─────────────────────────────────────────────────────────────────
+  // One user message → one Oracle turn in manual mode. In auto mode the
+  // results of its PC actions (e.g. a run_young error) go straight back to it,
+  // and it keeps going until it stops asking for actions, the step budget runs
+  // out, or the user presses "Detener".
   async function send(override?: string, attachments: ChatAttachment[] = []) {
     const userText = (override ?? input).trim();
     if ((!userText && attachments.length === 0) || busy) return;
     const text = userText || "Revisá los archivos adjuntos y ayudame a entenderlos.";
     setInput("");
     setMobileView("chat");
-    const history = [
-      ...turns,
-      {
-        id: newId(),
-        role: "user" as const,
-        text,
-        attachments: attachments.map(({ name, kind }) => ({ name, kind })),
-      },
-    ];
-    const latestId = history[history.length - 1].id;
-    setTurns(history);
     setBusy(true);
+    stopRef.current = false;
+    setStopping(false);
 
+    try {
+      let next: string | null = text;
+      for (let step = 0; next !== null; step++) {
+        const turn: Turn =
+          step === 0
+            ? { id: newId(), role: "user", text: next, attachments: attachments.map(({ name, kind }) => ({ name, kind })) }
+            : { id: newId(), role: "user", text: next, auto: true };
+        setTurns((prev) => [...prev, turn]);
+        // Attachments ride along only with the message they were attached to.
+        next = await oracleTurn(autoMode, step === 0 ? { id: turn.id, files: attachments } : null);
+        if (next !== null && stopRef.current) {
+          append({ id: newId(), role: "action", ok: true, text: "Auto: detenido por vos" });
+          break;
+        }
+        if (next !== null && step + 1 >= AUTO_MAX_STEPS) {
+          append({ id: newId(), role: "action", ok: false, text: `Auto: se alcanzó el límite de ${AUTO_MAX_STEPS} pasos — escribí "seguí" para continuar` });
+          break;
+        }
+      }
+    } finally {
+      setBusy(false);
+      setStopping(false);
+    }
+  }
+
+  // Runs one request to the Oracle and applies what it did. Returns the PC
+  // results to feed back (auto mode only), or null when this turn is final.
+  async function oracleTurn(auto: boolean, attached: { id: number; files: ChatAttachment[] } | null): Promise<string | null> {
+    const history = turnsRef.current;
+    const last = history[history.length - 1];
+    const followUp = last?.role === "user" && Boolean(last.auto);
     try {
       const res = await fetch("/api/ai/chat", {
         method: "POST",
@@ -301,18 +377,23 @@ export default function LivePage() {
             .map((t) => ({
               role: t.role === "oracle" ? "assistant" : "user",
               text: t.text,
-              ...(t.role === "user" && t.id === latestId && attachments.length ? { attachments } : {}),
+              ...(t.role === "user" && attached && t.id === attached.id && attached.files.length ? { attachments: attached.files } : {}),
             })),
           filesTree: fsTree(vfsCurrent()),
-          activeFile: currentPath ? { name: currentPath.slice(1), content: editorValue } : undefined,
+          // Follow-up auto steps send the saved file: this render's editorValue
+          // predates whatever the Oracle wrote since.
+          activeFile: currentPath
+            ? { name: currentPath.slice(1), content: followUp ? (vfsCurrent()[currentPath]?.content ?? editorValue) : editorValue }
+            : undefined,
           updatesFile: vfsCurrent()[UPDATES_PATH]?.content,
           agentId,
+          autoMode: auto,
         }),
       });
       const data = await res.json();
       if (data.error) {
         append({ id: newId(), role: "error", text: String(data.error) });
-        return;
+        return null;
       }
 
       for (const name of (data.syntaxFixed ?? []) as string[]) {
@@ -352,25 +433,40 @@ export default function LivePage() {
 
       append({ id: newId(), role: "oracle", text: data.reply || "(sin respuesta)" });
 
+      const feedback: Promise<string>[] = [];
       for (const pc of data.pcActions ?? []) {
         if (!pc.commandId) {
-          append({ id: newId(), role: "action", ok: false, text: pc.error || `No se pudo encolar ${pc.type}` });
+          const why = pc.error || `No se pudo encolar ${pc.type}`;
+          append({ id: newId(), role: "action", ok: false, text: why });
+          feedback.push(Promise.resolve(`[${pc.type} ${pc.param ?? ""}]: ERROR: ${why}`));
           continue;
         }
         const id = newId();
         const label = `${pc.type}${pc.param ? ` ${pc.param}` : ""} en tu PC`;
         append({ id, role: "action", ok: true, pending: true, text: label });
-        pollCommand(pc.commandId).then(({ result, ok }) => {
-          setTurns((prev) =>
-            prev.map((t) => (t.id === id ? { id, role: "action", ok, text: `${label}: ${result.split("\n")[0]}` } : t)),
-          );
-          if (result.includes("\n")) append({ id: newId(), role: "oracle", text: "```\n" + result + "\n```" });
-        });
+        feedback.push(
+          pollCommand(pc.commandId).then(({ result, ok }) => {
+            // The whole result stays visible (a run error is often many lines):
+            // first line as the summary, everything as the detail block.
+            const [first, ...rest] = result.split("\n");
+            setTurns((prev) =>
+              prev.map((t) =>
+                t.id === id ? { id, role: "action", ok, text: `${label}: ${first}`, detail: rest.join("\n").trim() || undefined } : t,
+              ),
+            );
+            return `[${pc.type} ${pc.param ?? ""}]: ${keepTail(result, AUTO_RESULT_MAX_CHARS)}`;
+          }),
+        );
       }
+
+      // Manual mode: results just show up as they arrive. Auto mode: wait for
+      // all of them and hand them back to the Oracle as its next input.
+      if (!auto || feedback.length === 0) return null;
+      const results = await Promise.all(feedback);
+      return `TOOL_RESULTS (de tu PC):\n${results.join("\n\n")}\n\nSeguí: si algo falló, corregilo y volvé a ejecutarlo; si todo está bien, terminá con un resumen corto.`;
     } catch (err) {
       append({ id: newId(), role: "error", text: `No se pudo hablar con el Oráculo: ${String(err)}` });
-    } finally {
-      setBusy(false);
+      return null;
     }
   }
 
@@ -581,6 +677,7 @@ export default function LivePage() {
             onSelectTab={setActivePath}
             onCloseTab={closeTab}
             onAskOracle={(p) => focusChat(p)}
+            problem={syntax && !syntax.ok ? { line: syntax.line, message: syntax.message } : null}
             welcome={welcome}
           />
         </main>
@@ -594,6 +691,13 @@ export default function LivePage() {
             turns={turns}
             input={input}
             busy={busy}
+            autoMode={autoMode}
+            onToggleAuto={toggleAuto}
+            stopping={stopping}
+            onStop={() => {
+              stopRef.current = true;
+              setStopping(true);
+            }}
             onInput={setInput}
             onSend={send}
             onClear={() => setTurns([])}

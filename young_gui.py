@@ -1,5 +1,3 @@
-import contextlib
-import io
 import os
 import re
 import subprocess
@@ -7,29 +5,27 @@ import sys
 import threading
 import traceback
 from pathlib import Path
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
 
-from young_runner import run as run_young
+import young_pc_actions
+import tkinter as tk
+from tkinter import messagebox, simpledialog, ttk
+
+from young_runner import run_report as run_young_report
 
 
 class YoungGui(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Young Studio Live")
-        self.geometry("1180x760")
-        self.minsize(980, 620)
+        self.title("Young - Oracle Live")
+        self.geometry("1100x720")
+        self.minsize(860, 560)
 
         self.root_dir = Path(__file__).resolve().parent
-        self.last_young_output = ""
+        self.selected_file = None
+        self._settings_win = None
 
-        self.script_path_var = tk.StringVar(value=str(self._default_script_path()))
         self.api_key_var = tk.StringVar(value=os.environ.get("ANTHROPIC_API_KEY", ""))
         self.status_var = tk.StringVar(value="Ready")
-        self.goal_var = tk.StringVar(value="build some assembly .young code")
-        self.arcana_var = tk.StringVar(value="IX - THE HERMIT")
-        self.complexity_var = tk.StringVar(value="balanced")
-        self.constraints_var = tk.StringVar(value="Keep runtime deterministic and under O(n).")
         self.live_input_var = tk.StringVar(value="")
         self.live_voice_var = tk.BooleanVar(value=True)
         self.live_history = []
@@ -39,7 +35,9 @@ class YoungGui(tk.Tk):
         self._build_layout()
 
     def _apply_color_theme(self):
-        self.configure(bg="#0d1021")
+        # Matches web/app/globals.css so all three Young surfaces (native/Python/web)
+        # read as one product: dark bg, gold wordmark/highlights, violet primary action.
+        self.configure(bg="#08070c")
 
         style = ttk.Style(self)
         try:
@@ -47,208 +45,221 @@ class YoungGui(tk.Tk):
         except tk.TclError:
             pass
 
-        style.configure("TFrame", background="#0d1021")
-        style.configure("TLabelframe", background="#141938", foreground="#e9ecff", borderwidth=1)
-        style.configure("TLabelframe.Label", background="#141938", foreground="#7ce8ff", font=("Segoe UI", 10, "bold"))
-        style.configure("TLabel", background="#0d1021", foreground="#d8dcff")
-        style.configure("Header.TLabel", background="#0d1021", foreground="#7ce8ff", font=("Segoe UI", 14, "bold"))
-        style.configure("Hint.TLabel", background="#0d1021", foreground="#9ea6d8")
-        style.configure("TButton", background="#2a3c7a", foreground="#f3f6ff", padding=(10, 6), borderwidth=0)
-        style.map("TButton", background=[("active", "#3652a3")])
-        style.configure("Accent.TButton", background="#00a6c8", foreground="#00121a", padding=(10, 6), borderwidth=0)
-        style.map("Accent.TButton", background=[("active", "#2cd3f4")])
-        style.configure("Danger.TButton", background="#ff5579", foreground="#22000b", padding=(10, 6), borderwidth=0)
-        style.map("Danger.TButton", background=[("active", "#ff7a97")])
-        style.configure("TEntry", fieldbackground="#0f1a3b", foreground="#e9ecff")
-        style.configure("TCombobox", fieldbackground="#0f1a3b", foreground="#e9ecff")
-        style.configure("TNotebook", background="#0d1021", borderwidth=0)
-        style.configure("TNotebook.Tab", background="#1a2150", foreground="#cfd8ff", padding=(12, 6))
-        style.map("TNotebook.Tab", background=[("selected", "#00a6c8")], foreground=[("selected", "#00121a")])
-
-    def _default_script_path(self) -> Path:
-        candidates = [
-            self.root_dir / "sample_painpoint.young",
-            self.root_dir / "sample_rituals_tarot.young",
-            self.root_dir / "sample_tarot.young",
-            self.root_dir / "sample.young",
-        ]
-        for path in candidates:
-            if path.exists():
-                return path
-        return self.root_dir / "sample.young"
+        style.configure("TFrame", background="#08070c")
+        style.configure("TLabel", background="#08070c", foreground="#e8e3f0")
+        style.configure("Title.TLabel", background="#08070c", foreground="#c9a24b", font=("Cambria", 20, "bold"))
+        style.configure("Section.TLabel", background="#08070c", foreground="#8b8799", font=("Segoe UI", 9, "bold"))
+        style.configure("Hint.TLabel", background="#08070c", foreground="#8b8799")
+        style.configure("TButton", background="#1a1722", foreground="#e8e3f0", padding=(10, 6), borderwidth=0)
+        style.map("TButton", background=[("active", "#241f30")])
+        style.configure("Accent.TButton", background="#7c5cff", foreground="#ffffff", padding=(10, 6), borderwidth=0)
+        style.map("Accent.TButton", background=[("active", "#8f74ff")])
+        style.configure("Danger.TButton", background="#3a1620", foreground="#f87171", padding=(10, 6), borderwidth=0)
+        style.map("Danger.TButton", background=[("active", "#4a1c29")])
+        style.configure("TEntry", fieldbackground="#0d0b14", foreground="#e8e3f0", insertcolor="#e8e3f0")
+        style.configure("TCheckbutton", background="#08070c", foreground="#e8e3f0")
 
     def _build_layout(self):
+        # One consolidated chat-first view (no tabs) — mirrors web/app/live: a
+        # transcript + MyComputer file panel + input row, with everything else
+        # (API key, voice toggle, rebuild binary) tucked behind one Settings dialog.
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(2, weight=1)
+        self.rowconfigure(1, weight=1)
 
-        banner = ttk.Frame(self, padding=(12, 10, 12, 0))
-        banner.grid(row=0, column=0, sticky="ew")
-        banner.columnconfigure(0, weight=1)
-        ttk.Label(banner, text="Young Studio Live", style="Header.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(
-            banner,
-            text="Live-first .young workflow: talk, create files via MyComputer, run immediately.",
-            style="Hint.TLabel",
-        ).grid(row=1, column=0, sticky="w", pady=(2, 0))
+        header = ttk.Frame(self, padding=(14, 12, 14, 6))
+        header.grid(row=0, column=0, sticky="ew")
+        header.columnconfigure(0, weight=1)
+        ttk.Label(header, text="YOUNG", style="Title.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Button(header, text="Settings", command=self.on_open_settings).grid(row=0, column=1, sticky="e")
 
-        top = ttk.Frame(self, padding=(12, 10))
-        top.grid(row=1, column=0, sticky="ew")
-        top.columnconfigure(1, weight=1)
+        main = ttk.Panedwindow(self, orient=tk.HORIZONTAL)
+        main.grid(row=1, column=0, sticky="nsew", padx=14, pady=(0, 6))
 
-        ttk.Label(top, text="Young File").grid(row=0, column=0, sticky="w")
-        ttk.Entry(top, textvariable=self.script_path_var).grid(row=0, column=1, sticky="ew", padx=8)
-        ttk.Button(top, text="Browse", command=self.on_browse_script).grid(row=0, column=2, padx=(0, 8))
-        ttk.Button(top, text="Run Young", command=self.on_run_young, style="Accent.TButton").grid(row=0, column=3, padx=(0, 8))
-        ttk.Button(top, text="Mic Input", command=self.on_live_mic).grid(row=0, column=4, padx=(0, 8))
-        ttk.Button(top, text="Build Native", command=self.on_build_native).grid(row=0, column=5)
+        # Left: chat
+        chat = ttk.Frame(main, padding=(0, 0, 8, 0))
+        chat.columnconfigure(0, weight=1)
+        chat.rowconfigure(0, weight=1)
+        main.add(chat, weight=3)
 
-        self.tabs = ttk.Notebook(self)
-        self.tabs.grid(row=2, column=0, sticky="nsew", padx=12, pady=6)
+        self.live_output_text = tk.Text(chat, wrap="word")
+        self.live_output_text.grid(row=0, column=0, sticky="nsew")
+        self.live_output_text.configure(bg="#0b0912", fg="#e8e3f0", insertbackground="#7c5cff", relief="flat")
 
-        run_tab = ttk.Frame(self.tabs, padding=8)
-        compose_tab = ttk.Frame(self.tabs, padding=8)
-        live_tab = ttk.Frame(self.tabs, padding=8)
-
-        self.tabs.add(run_tab, text="Run")
-        self.tabs.add(compose_tab, text="Compose")
-        self.tabs.add(live_tab, text="Live")
-
-        run_tab.columnconfigure(0, weight=1)
-        run_tab.rowconfigure(0, weight=1)
-
-        run_main = ttk.Panedwindow(run_tab, orient=tk.HORIZONTAL)
-        run_main.grid(row=0, column=0, sticky="nsew")
-
-        left = ttk.Frame(run_main, padding=6)
-        left.columnconfigure(0, weight=1)
-        left.rowconfigure(1, weight=1)
-
-        right = ttk.Frame(run_main, padding=6)
-        right.columnconfigure(0, weight=1)
-        right.rowconfigure(1, weight=1)
-
-        run_main.add(left, weight=1)
-        run_main.add(right, weight=1)
-
-        ttk.Label(left, text="Young Output").grid(row=0, column=0, sticky="w")
-        self.young_output_text = tk.Text(left, wrap="word", height=18)
-        self.young_output_text.grid(row=1, column=0, sticky="nsew", pady=(6, 0))
-        self.young_output_text.configure(bg="#0c1431", fg="#cfd8ff", insertbackground="#79e7ff", relief="flat")
-
-        ttk.Label(right, text="Claude Response").grid(row=0, column=0, sticky="w")
-        self.claude_output_text = tk.Text(right, wrap="word", height=18)
-        self.claude_output_text.grid(row=1, column=0, sticky="nsew", pady=(6, 0))
-        self.claude_output_text.configure(bg="#15163d", fg="#f3ddff", insertbackground="#7ce8ff", relief="flat")
-
-        key_frame = ttk.LabelFrame(run_tab, text="API", padding=(8, 6))
-        key_frame.grid(row=1, column=0, sticky="ew", pady=(8, 0))
-        key_frame.columnconfigure(1, weight=1)
-        ttk.Label(key_frame, text="Anthropic API Key").grid(row=0, column=0, sticky="w")
-        ttk.Entry(key_frame, textvariable=self.api_key_var, show="*").grid(row=0, column=1, sticky="ew", padx=8)
-        ttk.Label(key_frame, text="Only used in memory for this app process.", style="Hint.TLabel").grid(row=0, column=2, sticky="w")
-
-        compose_tab.columnconfigure(0, weight=1)
-
-        composer = ttk.LabelFrame(compose_tab, text="Young Composer", padding=(8, 6))
-        composer.grid(row=0, column=0, sticky="ew", pady=(0, 8))
-        composer.columnconfigure(1, weight=1)
-        composer.columnconfigure(3, weight=1)
-
-        ttk.Label(composer, text="Goal").grid(row=0, column=0, sticky="w")
-        ttk.Entry(composer, textvariable=self.goal_var).grid(row=0, column=1, sticky="ew", padx=(6, 12))
-
-        ttk.Label(composer, text="Arcana").grid(row=0, column=2, sticky="w")
-        ttk.Combobox(
-            composer,
-            textvariable=self.arcana_var,
-            values=[
-                "0 - THE FOOL",
-                "I - THE MAGICIAN",
-                "II - THE HIGH PRIESTESS",
-                "III - THE EMPRESS",
-                "IV - THE EMPEROR",
-                "V - THE HIEROPHANT",
-                "VI - THE LOVERS",
-                "VII - THE CHARIOT",
-                "VIII - STRENGTH",
-                "IX - THE HERMIT",
-                "X - WHEEL OF FORTUNE",
-                "XI - JUSTICE",
-                "XII - THE HANGED MAN",
-                "XIII - DEATH",
-                "XIV - TEMPERANCE",
-                "XV - THE DEVIL",
-                "XVI - THE TOWER",
-                "XVII - THE STAR",
-                "XVIII - THE MOON",
-                "XIX - THE SUN",
-                "XX - JUDGEMENT",
-                "XXI - THE WORLD",
-            ],
-            state="readonly",
-        ).grid(row=0, column=3, sticky="ew", padx=(6, 0))
-
-        ttk.Label(composer, text="Complexity").grid(row=1, column=0, sticky="w", pady=(6, 0))
-        ttk.Combobox(
-            composer,
-            textvariable=self.complexity_var,
-            values=["cheap", "balanced", "rich"],
-            state="readonly",
-        ).grid(row=1, column=1, sticky="w", padx=(6, 12), pady=(6, 0))
-
-        ttk.Label(composer, text="Constraints").grid(row=1, column=2, sticky="w", pady=(6, 0))
-        ttk.Entry(composer, textvariable=self.constraints_var).grid(row=1, column=3, sticky="ew", padx=(6, 0), pady=(6, 0))
-
-        composer_actions = ttk.Frame(composer)
-        composer_actions.grid(row=2, column=0, columnspan=4, sticky="w", pady=(8, 0))
-        ttk.Button(composer_actions, text="Build Coding Prompt", command=self.on_build_coding_prompt).grid(row=0, column=0, padx=(0, 8))
-        ttk.Button(composer_actions, text="Insert .young Scaffold", command=self.on_insert_young_scaffold).grid(row=0, column=1)
-
-        ttk.Label(compose_tab, text="Claude Prompt").grid(row=1, column=0, sticky="w")
-        self.prompt_text = tk.Text(compose_tab, wrap="word", height=10)
-        self.prompt_text.grid(row=2, column=0, sticky="ew", pady=(6, 8))
-
-        actions = ttk.Frame(compose_tab)
-        actions.grid(row=3, column=0, sticky="w")
-        ttk.Button(actions, text="Ask Claude", command=self.on_ask_claude, style="Accent.TButton").grid(row=0, column=0, padx=(0, 8))
-        ttk.Button(actions, text="Interpret Young Output", command=self.on_interpret_output).grid(row=0, column=1)
-
-        live_tab.columnconfigure(0, weight=1)
-        live_tab.rowconfigure(1, weight=1)
-
-        live = ttk.LabelFrame(live_tab, text="Live Agent (Haiku + MyComputer)", padding=(8, 6))
-        live.grid(row=0, column=0, sticky="nsew")
-        live.columnconfigure(0, weight=1)
-        live.rowconfigure(2, weight=1)
-
-        live_controls = ttk.Frame(live)
-        live_controls.grid(row=0, column=0, sticky="ew")
-        live_controls.columnconfigure(0, weight=1)
-
-        self.live_input_entry = ttk.Entry(live_controls, textvariable=self.live_input_var)
+        input_row = ttk.Frame(chat)
+        input_row.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        input_row.columnconfigure(0, weight=1)
+        self.live_input_entry = ttk.Entry(input_row, textvariable=self.live_input_var)
         self.live_input_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
         self.live_input_entry.bind("<Return>", self._on_live_enter)
-        ttk.Button(live_controls, text="Send", command=self.on_live_send, style="Accent.TButton").grid(row=0, column=1, padx=(0, 8))
-        ttk.Button(live_controls, text="Mic", command=self.on_live_mic).grid(row=0, column=2, padx=(0, 8))
-        ttk.Button(live_controls, text="Clear", command=self.on_live_clear, style="Danger.TButton").grid(row=0, column=3)
+        ttk.Button(input_row, text="Mic", command=self.on_live_mic).grid(row=0, column=1, padx=(0, 8))
+        ttk.Button(input_row, text="Enviar", command=self.on_live_send, style="Accent.TButton").grid(row=0, column=2)
 
-        quick = ttk.Frame(live)
-        quick.grid(row=1, column=0, sticky="w", pady=(6, 0))
-        ttk.Label(quick, text="Quick:", style="Hint.TLabel").grid(row=0, column=0, padx=(0, 6))
-        ttk.Button(quick, text="Create .young file", command=lambda: self._fill_live_input("Create a new .young file with rituals for chakras and physics work formula."))\
-            .grid(row=0, column=1, padx=(0, 6))
-        ttk.Button(quick, text="Read current file", command=lambda: self._fill_live_input("Read my current .young file and explain improvements."))\
-            .grid(row=0, column=2, padx=(0, 6))
-        ttk.Button(quick, text="Update for C profile", command=lambda: self._fill_live_input("Update my .young code to be strict C-transpilable and keep symbolic naming."))\
-            .grid(row=0, column=3)
-        ttk.Checkbutton(quick, text="Voice reply", variable=self.live_voice_var).grid(row=0, column=4, padx=(12, 0))
+        # Right: MyComputer file panel
+        panel = ttk.Frame(main, padding=(8, 0, 0, 0))
+        panel.columnconfigure(0, weight=1)
+        panel.rowconfigure(2, weight=1)
+        main.add(panel, weight=2)
 
-        self.live_output_text = tk.Text(live, wrap="word", height=18)
-        self.live_output_text.grid(row=2, column=0, sticky="ew", pady=(6, 0))
-        self.live_output_text.configure(bg="#10223f", fg="#e2fff6", insertbackground="#63ffd6", relief="flat")
+        panel_head = ttk.Frame(panel)
+        panel_head.grid(row=0, column=0, sticky="ew")
+        panel_head.columnconfigure(0, weight=1)
+        ttk.Label(panel_head, text="MYCOMPUTER", style="Section.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Button(panel_head, text="+ Nuevo", command=self.on_file_new).grid(row=0, column=1, sticky="e")
 
-        status = ttk.Label(self, textvariable=self.status_var, anchor="w", padding=(12, 6))
-        status.grid(row=3, column=0, sticky="ew")
+        self.file_listbox = tk.Listbox(panel, height=8, exportselection=False)
+        self.file_listbox.grid(row=1, column=0, sticky="new", pady=(6, 6))
+        self.file_listbox.configure(bg="#0d0b14", fg="#e8e3f0", relief="flat", highlightthickness=0)
+        self.file_listbox.bind("<<ListboxSelect>>", self.on_file_select)
+
+        self.file_editor = tk.Text(panel, wrap="none", height=14)
+        self.file_editor.grid(row=2, column=0, sticky="nsew")
+        self.file_editor.configure(bg="#0d0b14", fg="#e8e3f0", insertbackground="#c9a24b", relief="flat")
+
+        file_actions = ttk.Frame(panel)
+        file_actions.grid(row=3, column=0, sticky="ew", pady=(6, 0))
+        file_actions.columnconfigure((0, 1, 2), weight=1)
+        ttk.Button(file_actions, text="Guardar", command=self.on_file_save).grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        ttk.Button(file_actions, text="Run", command=self.on_file_run, style="Accent.TButton").grid(row=0, column=1, sticky="ew", padx=4)
+        ttk.Button(file_actions, text="Borrar", command=self.on_file_delete, style="Danger.TButton").grid(row=0, column=2, sticky="ew", padx=(4, 0))
+
+        status = ttk.Label(self, textvariable=self.status_var, anchor="w", padding=(14, 6))
+        status.grid(row=2, column=0, sticky="ew")
+
+        self._refresh_file_list()
+
+    # ── MyComputer file panel ────────────────────────────────────────────────
+
+    def _list_young_files(self):
+        files = []
+        for path in self.root_dir.rglob("*.young"):
+            parts = set(path.parts)
+            if "__pycache__" in parts or ".venv" in parts:
+                continue
+            if "native" in parts and "build" in parts:
+                continue
+            files.append(path.relative_to(self.root_dir).as_posix())
+        return sorted(files)
+
+    def _refresh_file_list(self):
+        self.file_listbox.delete(0, tk.END)
+        for rel in self._list_young_files():
+            self.file_listbox.insert(tk.END, rel)
+
+    def on_file_select(self, _event=None):
+        selection = self.file_listbox.curselection()
+        if not selection:
+            return
+        rel = self.file_listbox.get(selection[0])
+        self.selected_file = rel
+        try:
+            content = (self.root_dir / rel).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            content = ""
+        self._set_text(self.file_editor, content)
+
+    def on_file_new(self):
+        name = simpledialog.askstring(
+            "Nuevo archivo", "Nombre (.young):", initialvalue="ritual_new.young", parent=self
+        )
+        if not name:
+            return
+        ok, result = self._mycomputer_apply_action({"action": "create", "path": "/", "name": name, "content": ""})
+        self._set_status(result)
+        self._refresh_file_list()
+        if ok:
+            rel = name.lstrip("/")
+            files = self._list_young_files()
+            if rel in files:
+                idx = files.index(rel)
+                self.file_listbox.selection_clear(0, tk.END)
+                self.file_listbox.selection_set(idx)
+                self.on_file_select()
+
+    def on_file_save(self):
+        if not self.selected_file:
+            self._set_status("No file selected.")
+            return
+        content = self.file_editor.get("1.0", tk.END).rstrip("\n")
+        ok, result = self._mycomputer_apply_action(
+            {"action": "update", "path": "/", "name": self.selected_file, "content": content}
+        )
+        self._set_status(result)
+
+    def on_file_run(self):
+        if not self.selected_file:
+            self._set_status("No file selected.")
+            return
+        script_path = self.root_dir / self.selected_file
+        rel = self.selected_file
+        self._set_status(f"Running {rel}...")
+
+        def task():
+            try:
+                src = script_path.read_text(encoding="utf-8")
+            except OSError as ex:
+                self.after(0, lambda ex=ex: self._live_append("RUN ERROR", str(ex)))
+                self.after(0, lambda: self._set_status("Ready"))
+                return
+            report = run_young_report(src, filename=rel, timeout_s=30)
+            if report.ok:
+                output = report.output.strip() or "(no output)"
+                self.after(0, lambda: self._live_append("RUN", f"{rel}\n{output}\nExit code: {report.exit_code}"))
+            else:
+                # Located Young error (file:line:col, caret, ritual stack), not a Python traceback.
+                self.after(0, lambda: self._live_append("RUN ERROR", report.as_text()))
+            self.after(0, lambda: self._set_status("Ready" if report.ok else "Run failed — see Live log"))
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def on_file_delete(self):
+        if not self.selected_file:
+            self._set_status("No file selected.")
+            return
+        rel = self.selected_file
+        if not messagebox.askyesno("Confirmar borrado", f"¿Borrar {rel}?"):
+            return
+        try:
+            (self.root_dir / rel).unlink()
+            self._set_status(f"OK: deleted /{rel}")
+        except OSError as ex:
+            self._set_status(f"ERROR: {ex}")
+        self.selected_file = None
+        self._set_text(self.file_editor, "")
+        self._refresh_file_list()
+
+    # ── Settings dialog (API key, voice toggle, rebuild binary — everything
+    #    rarely touched lives here instead of cluttering the main view) ──────
+
+    def on_open_settings(self):
+        if self._settings_win is not None and self._settings_win.winfo_exists():
+            self._settings_win.deiconify()
+            self._settings_win.lift()
+            return
+
+        win = tk.Toplevel(self)
+        self._settings_win = win
+        win.title("Settings")
+        win.configure(bg="#08070c")
+        win.transient(self)
+        win.resizable(False, False)
+
+        frame = ttk.Frame(win, padding=14)
+        frame.grid(row=0, column=0, sticky="nsew")
+
+        ttk.Label(frame, text="ANTHROPIC_API_KEY").grid(row=0, column=0, sticky="w")
+        ttk.Entry(frame, textvariable=self.api_key_var, show="*", width=40).grid(
+            row=1, column=0, sticky="ew", pady=(4, 12)
+        )
+        ttk.Checkbutton(frame, text="Voice reply (TTS)", variable=self.live_voice_var).grid(
+            row=2, column=0, sticky="w", pady=(0, 12)
+        )
+        ttk.Button(frame, text="Limpiar chat", command=self.on_live_clear).grid(
+            row=3, column=0, sticky="ew", pady=(0, 8)
+        )
+        ttk.Button(frame, text="Rebuild native binary", command=self.on_build_native).grid(
+            row=4, column=0, sticky="ew", pady=(0, 12)
+        )
+        ttk.Button(frame, text="Close", command=win.destroy, style="Accent.TButton").grid(row=5, column=0, sticky="ew")
 
     def _set_status(self, text: str):
         self.status_var.set(text)
@@ -341,10 +352,6 @@ class YoungGui(tk.Tk):
         block = f"{role}:\n{text.strip()}\n"
         next_value = f"{current}\n\n{block}".strip() if current else block
         self._set_text(self.live_output_text, next_value)
-
-    def _fill_live_input(self, text: str):
-        self.live_input_var.set(text)
-        self.live_input_entry.focus_set()
 
     def _on_live_enter(self, _event):
         self.on_live_send()
@@ -513,8 +520,50 @@ $synth.Speak('{safe}')
         return actions
 
     def _strip_file_actions(self, text: str) -> str:
-        visible = text.split("[FILE_ACTION:")[0].strip()
-        return re.sub(r"FILE_ACTION\s*:[^\n]*", "", visible).strip()
+        visible = text.split("[FILE_ACTION:")[0]
+        visible = visible.split("[PC_ACTION:")[0].strip()
+        visible = re.sub(r"FILE_ACTION\s*:[^\n]*", "", visible)
+        visible = re.sub(r"PC_ACTION\s*:[^\n]*", "", visible)
+        return visible.strip()
+
+    def _try_fallback_file_action(self, visible_text: str):
+        """Recover a create the model narrated but forgot to tag with FILE_ACTION:
+        a bare *.young filename plus a fenced code block is enough to act on."""
+        name_match = re.search(r"\b[A-Za-z0-9_\-]+\.young\b", visible_text)
+        if not name_match:
+            return None
+        fence_match = re.search(r"```[a-zA-Z]*\n(.*?)```", visible_text, re.DOTALL)
+        if not fence_match:
+            return None
+        content = fence_match.group(1).strip()
+        if not content:
+            return None
+        return {
+            "action": "create",
+            "path": "/",
+            "name": name_match.group(0),
+            "type": "file",
+            "content": content,
+        }
+
+    def _parse_pc_actions(self, text: str):
+        actions = []
+        chunks = text.split("[PC_ACTION:")
+        for chunk in chunks[1:]:
+            end_idx = chunk.find("]")
+            block = chunk if end_idx == -1 else chunk[:end_idx]
+            parts = block.split("|", 1)
+            ptype = (parts[0] or "").strip().lower()
+            param = parts[1].strip() if len(parts) > 1 else ""
+            if ptype:
+                actions.append({"type": ptype, "param": param})
+        return actions
+
+    def _execute_pc_action(self, ptype: str, param: str) -> str:
+        """The ONLY five PC_ACTION types that exist — no generic shell/run-command action.
+        Delegates to young_pc_actions so the local Live tab and young_host_agent.py
+        (driven remotely by the Web Live control-plane) behave identically."""
+        return young_pc_actions.execute_pc_action(self.root_dir, ptype, param)
 
     def _build_live_prompt(self, user_message: str, tool_feedback: str = "") -> str:
         history = []
@@ -538,7 +587,22 @@ $synth.Speak('{safe}')
             "[FILE_ACTION:update|/folder|name.young|file|new content]",
             "[FILE_ACTION:list|/|||]",
             "",
-            "Do not explain FILE_ACTION syntax to the user.",
+            "You can also check on or act within the real machine through a small FIXED set of",
+            "PC_ACTION commands. There is no generic shell/run-command action — only these five:",
+            "[PC_ACTION:status|]              disk free/total + OS info, no param",
+            "[PC_ACTION:list_processes|]      read-only process snapshot, no param",
+            "[PC_ACTION:open_folder|]         opens the project root in the file explorer, no param",
+            "[PC_ACTION:run_young|name.young] runs an existing project script, returns its output",
+            "[PC_ACTION:read_repo|<github url or owner/repo>[@branch][|path/to/file]]",
+            "    no path -> lists the repo's file tree; with a path -> reads that file's content.",
+            "    Use this whenever the user gives you a GitHub link and wants you to read/explain it.",
+            "",
+            "Do not explain FILE_ACTION or PC_ACTION syntax to the user.",
+            "",
+            "Work autonomously until the task is done: after you create or update a .young file,",
+            "verify it with [PC_ACTION:run_young|name.young]. If the result is an ERROR (it names the",
+            "line, shows the code and the ritual call stack), fix that file and run it again.",
+            "Only give the final answer once it runs cleanly or you clearly explain what still fails.",
             "",
             "Current .young tree:",
             self._mycomputer_project_tree(),
@@ -577,15 +641,34 @@ $synth.Speak('{safe}')
             if visible:
                 final_text = visible
 
+            used_fallback = False
             if not actions:
+                fallback = self._try_fallback_file_action(visible)
+                if fallback:
+                    actions = [fallback]
+                    used_fallback = True
+
+            pc_actions = self._parse_pc_actions(response)
+
+            if not actions and not pc_actions:
                 return True, final_text or "(no response)", "\n".join(action_log)
 
             tool_lines = []
-            for action in actions:
+            for i, action in enumerate(actions):
                 ok_action, result = self._mycomputer_apply_action(action)
                 status = "OK" if ok_action else "ERROR"
                 tool_lines.append(f"{status}: {result}")
-                action_log.append(f"{action.get('action','').upper()} -> {result}")
+                label = action.get("action", "").upper()
+                if used_fallback and i == 0:
+                    label = f"AUTO-DETECTED {label}"
+                action_log.append(f"{label} -> {result}")
+
+            for pc_action in pc_actions:
+                ptype = pc_action.get("type", "")
+                param = pc_action.get("param", "")
+                result = self._execute_pc_action(ptype, param)
+                tool_lines.append(f"PC_ACTION {ptype}: {result}")
+                action_log.append(f"PC_ACTION {ptype}({param}) -> {result}")
 
             tool_feedback = "\n".join(tool_lines)
             pending_user = "Use the tool results and continue."
@@ -593,45 +676,6 @@ $synth.Speak('{safe}')
         if not final_text:
             final_text = "Reached live tool-step limit."
         return True, final_text, "\n".join(action_log)
-
-    def on_browse_script(self):
-        file_path = filedialog.askopenfilename(
-            title="Select a Young Script",
-            initialdir=str(self.root_dir),
-            filetypes=[("Young files", "*.young"), ("All files", "*.*")],
-        )
-        if file_path:
-            self.script_path_var.set(file_path)
-
-    def on_run_young(self):
-        script_path = Path(self.script_path_var.get()).expanduser()
-        if not script_path.exists():
-            messagebox.showerror("Missing file", f"Young file not found:\n{script_path}")
-            return
-
-        self._set_status("Running Young script...")
-
-        def task():
-            buf = io.StringIO()
-            try:
-                src = script_path.read_text(encoding="utf-8")
-                with contextlib.redirect_stdout(buf):
-                    code = run_young(src)
-                output = buf.getvalue().strip()
-                lines = [f"File: {script_path}"]
-                if output:
-                    lines.append(output)
-                lines.append(f"Exit code: {code}")
-                result = "\n".join(lines)
-                self.last_young_output = result
-                self.after(0, lambda: self._set_text(self.young_output_text, result))
-                self.after(0, lambda: self._set_status("Young run completed"))
-            except Exception:
-                err = traceback.format_exc()
-                self.after(0, lambda: self._set_text(self.young_output_text, err))
-                self.after(0, lambda: self._set_status("Young run failed"))
-
-        threading.Thread(target=task, daemon=True).start()
 
     def _native_exe_candidates(self):
         override = os.environ.get("YOUNG_NATIVE_EXE", "").strip()
@@ -703,184 +747,15 @@ $synth.Speak('{safe}')
         def task():
             try:
                 ok, exe, combined = self._build_native_binary()
-                self.after(0, lambda: self._set_text(self.claude_output_text, combined))
-
+                self.after(0, lambda: self._live_append("BUILD", combined))
                 if ok:
                     self.after(0, lambda: self._set_status(f"Native build completed ({exe.name})"))
                 else:
                     self.after(0, lambda: self._set_status("Native build failed"))
             except Exception:
                 err = traceback.format_exc()
-                self.after(0, lambda: self._set_text(self.claude_output_text, err))
+                self.after(0, lambda: self._live_append("BUILD ERROR", err))
                 self.after(0, lambda: self._set_status("Native build failed"))
-
-        threading.Thread(target=task, daemon=True).start()
-
-    def on_interpret_output(self):
-        if not self.last_young_output:
-            messagebox.showinfo("No output", "Run a Young script first.")
-            return
-
-        prompt = (
-            "Interpret this Young runtime result briefly with tarot and Jung logic.\n\n"
-            f"{self.last_young_output}"
-        )
-        self.prompt_text.delete("1.0", tk.END)
-        self.prompt_text.insert("1.0", prompt)
-        self.on_ask_claude()
-
-    def _scaffold_for_current_settings(self) -> str:
-        goal = (self.goal_var.get() or "Build symbolic flow").strip()
-        arcana = (self.arcana_var.get() or "IX - THE HERMIT").strip()
-        complexity = (self.complexity_var.get() or "balanced").strip()
-        constraints = (self.constraints_var.get() or "Keep runtime deterministic.").strip()
-        safe_goal = goal.replace('"', "'")
-        safe_arcana = arcana.replace('"', "'")
-        safe_constraints = constraints.replace('"', "'")
-
-        return "\n".join([
-            "# Young scaffold generated by Young Composer",
-            f"# goal: {goal}",
-            f"# arcana: {arcana}",
-            f"# complexity: {complexity}",
-            "",
-            "ritual integrate_shadow(input_value: int) -> int {",
-            "    mut tension: int = input_value;",
-            "    STRENGTH WHILE tension > 0 {",
-            "        tension = tension - 1;",
-            "    }",
-            "    return input_value;",
-            "}",
-            "",
-            "ritual archetype_loop(seed: int) -> int {",
-            "    mut accumulator: int = 0;",
-            "    mut index: int = 0;",
-            "    STRENGTH WHILE index < seed {",
-            "        accumulator = accumulator + index;",
-            "        index = index + 1;",
-            "    }",
-            "    return accumulator;",
-            "}",
-            "",
-            "ritual main() -> int {",
-            "    mut consciousness: int = 3;",
-            "    mut shadow: int = 7;",
-            "    mut synthesis: int = 0;",
-            "",
-            "    CHARIOT IF shadow > consciousness {",
-            "        synthesis = integrate_shadow(shadow);",
-            "    } ELSE {",
-            "        synthesis = consciousness;",
-            "    }",
-            "",
-            "    synthesis = synthesis + archetype_loop(consciousness);",
-            f"    HIEROPHANT print(\"goal={safe_goal}\");",
-            f"    HIEROPHANT print(\"arcana={safe_arcana}\");",
-            f"    HIEROPHANT print(\"constraints={safe_constraints}\");",
-            "    HIEROPHANT print(\"result=\" + str(synthesis));",
-            "    return 0;",
-            "}",
-            "",
-        ])
-
-    def on_insert_young_scaffold(self):
-        script_path = Path(self.script_path_var.get()).expanduser()
-        if script_path.exists():
-            existing = script_path.read_text(encoding="utf-8", errors="ignore")
-            if existing.strip():
-                should_overwrite = messagebox.askyesno(
-                    "Overwrite file",
-                    f"{script_path.name} already has content. Replace with generated scaffold?",
-                )
-                if not should_overwrite:
-                    return
-
-        scaffold = self._scaffold_for_current_settings()
-        script_path.write_text(scaffold, encoding="utf-8")
-        self._set_text(self.young_output_text, f"Scaffold written to:\n{script_path}\n\n{scaffold}")
-        self._set_status(".young scaffold generated")
-
-    def on_build_coding_prompt(self):
-        goal = (self.goal_var.get() or "Build symbolic flow").strip()
-        arcana = (self.arcana_var.get() or "IX - THE HERMIT").strip()
-        complexity = (self.complexity_var.get() or "balanced").strip()
-        constraints = (self.constraints_var.get() or "Keep runtime deterministic.").strip()
-
-        complexity_hint = {
-            "cheap": "Target lower token usage and compact code. Keep the number of rituals small.",
-            "balanced": "Return clear runnable code with short explanation and practical naming.",
-            "rich": "Return richer multi-ritual architecture, still runnable and coherent.",
-        }.get(complexity, "Return clear runnable code.")
-
-        prompt = "\n".join([
-            "You are generating .young source code in a Jungian-tarot assembly style.",
-            f"Task: {goal}",
-            f"Arcana focus: {arcana}",
-            f"Constraints: {constraints}",
-            complexity_hint,
-            "",
-            "Output contract:",
-            "1) Provide one complete .young file first.",
-            "2) Then provide 4 short bullets explaining architecture choices.",
-            "",
-            "Language requirements:",
-            "- Define ritual main() -> int.",
-            "- Use ritual functions for modular structure.",
-            "- Include control flow with CHARIOT IF or STRENGTH WHILE.",
-            "- Use HIEROPHANT print for visible runtime traces.",
-            "- Keep syntax compatible with the Young runtime parser.",
-            "",
-            "Psychological framing requirements:",
-            "- Map at least 3 Jungian concepts into variables or ritual names (shadow, anima, self, individuation).",
-            "- Reflect tarot arcana symbolism in naming and branch logic.",
-            "- Keep it practical: this must execute, not just be poetic.",
-        ])
-
-        self.prompt_text.delete("1.0", tk.END)
-        self.prompt_text.insert("1.0", prompt)
-        self._set_status("Coding prompt generated")
-
-    def on_ask_claude(self):
-        prompt = self.prompt_text.get("1.0", tk.END).strip()
-        if not prompt:
-            messagebox.showerror("Missing prompt", "Enter a prompt for Claude.")
-            return
-
-        exe_path = self._find_native_exe()
-        if exe_path is None:
-            should_build = messagebox.askyesno(
-                "Native binary missing",
-                "Could not find young_haiku_cli.exe. Build Native now?",
-            )
-            if not should_build:
-                return
-
-        typed_api_key = self._normalize_api_key(self.api_key_var.get())
-        env_api_key = self._normalize_api_key(os.environ.get("ANTHROPIC_API_KEY", ""))
-        api_key = typed_api_key or env_api_key
-        if not api_key:
-            messagebox.showerror("Missing API key", "Set ANTHROPIC_API_KEY or enter it in the GUI.")
-            return
-
-        # Keep the field normalized to avoid hidden trailing spaces/newlines from copy-paste.
-        if typed_api_key and typed_api_key != self.api_key_var.get():
-            self.api_key_var.set(typed_api_key)
-
-        self._set_status("Calling Claude Haiku...")
-
-        def task():
-            try:
-                ok, response, err = self._call_claude_native(prompt, timeout=180)
-                if not ok:
-                    self.after(0, lambda: self._set_text(self.claude_output_text, err))
-                    self.after(0, lambda: self._set_status("Claude call failed"))
-                    return
-                self.after(0, lambda: self._set_text(self.claude_output_text, response))
-                self.after(0, lambda: self._set_status("Claude response received"))
-            except Exception:
-                err = traceback.format_exc()
-                self.after(0, lambda: self._set_text(self.claude_output_text, err))
-                self.after(0, lambda: self._set_status("Claude call failed"))
 
         threading.Thread(target=task, daemon=True).start()
 
@@ -890,8 +765,6 @@ $synth.Speak('{safe}')
         self._set_status("Live session cleared")
 
     def on_live_mic(self):
-        if hasattr(self, "tabs"):
-            self.tabs.select(2)
         if self.is_live_busy:
             messagebox.showinfo("Live busy", "Wait for the current live request to finish.")
             return
